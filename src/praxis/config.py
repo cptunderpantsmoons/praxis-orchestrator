@@ -1,15 +1,19 @@
-"""Application configuration via pydantic-settings.
+"""Application configuration via Pydantic Settings.
 
-All environment variables are documented here and mirrored in ``.env.example``.
-Settings are loaded from environment variables and an optional ``.env`` file.
+All environment variables are loaded here and validated at startup.
+The GLM-5.2 model context window is set to 1,000,000 tokens per project
+requirement and is overridable via the UMANS_GLM_CONTEXT_WINDOW env var.
 """
 
-from pydantic import Field, SecretStr
+from __future__ import annotations
+
+from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables and ``.env`` file."""
+    """Central application settings loaded from environment / .env file."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -17,53 +21,48 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Application ──────────────────────────────────────────────────
-    app_name: str = "PRAXIS"
-    app_version: str = "0.1.0"
-    debug: bool = False
+    # ── Application ───────────────────────────────────────────────
+    app_name: str = "praxis"
+    environment: str = "development"
+    host: str = "127.0.0.1"
+    port: int = 8000
 
-    # ── Umans API ────────────────────────────────────────────────────
-    umans_api_base_url: str = "https://api.umans.ai"
-    umans_api_key: SecretStr = Field(
-        default=SecretStr(""), description="Umans API key for inference"
-    )
+    # ── Umans Inference API ───────────────────────────────────────
+    umans_api_key: str = "test-key"
+    umans_base_url: str = "https://api.umans.ai/v1"
 
-    # ── AgentMail / Svix Webhook ─────────────────────────────────────
-    svix_webhook_secret: SecretStr = Field(
-        default=SecretStr(""),
-        description="Svix-compatible webhook signing secret (whsec_…)",
-    )
+    # Model context windows (tokens)
+    # GLM-5.2 adjusted to 1,000,000 token context per project requirement
+    umans_glm_context_window: int = 1_000_000
+    umans_kimi_context_window: int = 131_072
+    umans_qwen_context_window: int = 131_072
 
-    # ── Neo4j (Graph Database) ────────────────────────────────────────
-    neo4j_uri: str = "bolt://localhost:7687"
+    # ── AgentMail (Phase 1 email I/O) ─────────────────────────────
+    agentmail_api_key: str = "test-key"
+    agentmail_webhook_secret: str = "whsec_dGVzdHNlY3JldA=="
+
+    # ── Neo4j (Graph Database) ────────────────────────────────────
+    neo4j_uri: str = "bolt://127.0.0.1:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: SecretStr = Field(default=SecretStr("praxis_dev_password"))
+    neo4j_password: str = "praxis_dev_password"
 
-    # ── Qdrant (Vector Database) ──────────────────────────────────────
-    qdrant_url: str = "http://localhost:6333"
-    qdrant_api_key: SecretStr = Field(default=SecretStr("praxis_dev_api_key"))
+    # ── Qdrant (Vector Database) ───────────────────────────────────
+    qdrant_url: str = "http://127.0.0.1:6333"
+    qdrant_api_key: str = "praxis_dev_api_key"
 
-    # ── PostgreSQL (LangGraph Checkpointing) ──────────────────────────
-    postgres_dsn: str = "postgresql://praxis:praxis_dev_password@localhost:5432/praxis"
-
-    # ── Concurrency Limits ────────────────────────────────────────────
-    kimi_concurrency_limit: int = Field(default=4, description="Max concurrent Kimi/GLM calls")
-    glm_concurrency_limit: int = Field(default=4, description="Max concurrent GLM calls")
-    qwen_concurrency_limit: int = Field(default=8, description="Max concurrent Qwen calls")
+    # ── PostgreSQL (LangGraph Checkpointing) ──────────────────────
+    postgres_dsn: str = "postgresql://praxis:praxis_dev_password@127.0.0.1:5432/praxis"
 
 
-_settings_instance: Settings | None = None
-
-
+@lru_cache
 def get_settings() -> Settings:
-    """Return cached application settings (singleton)."""
-    global _settings_instance
-    if _settings_instance is None:
-        _settings_instance = Settings()
-    return _settings_instance
+    """Return cached settings instance."""
+    return Settings()
 
 
 def reset_settings() -> None:
-    """Reset the cached settings (useful for testing)."""
-    global _settings_instance
-    _settings_instance = None
+    """Clear the cached settings singleton.
+
+    Useful in tests and when environment variables change at runtime.
+    """
+    get_settings.cache_clear()

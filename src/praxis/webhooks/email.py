@@ -1,71 +1,77 @@
-"""AgentMail webhook endpoint for inbound email ingestion.
+"""AgentMail webhook endpoint with Svix signature verification."""
 
-Exposes ``POST /webhook/email`` which:
+from __future__ import annotations
 
-1.  Reads the raw request body.
-2.  Extracts ``svix-id``, ``svix-timestamp``, ``svix-signature`` headers.
-3.  Verifies the Svix-compatible HMAC-SHA256 signature.
-4.  Parses the payload into :class:`InboundEmailPayload`.
-5.  Returns ``200 OK`` with the event ID.
-"""
+import orjson
+import structlog
+from fastapi import APIRouter, HTTPException, Request, status
 
-from typing import Annotated
+from praxis.config import get_settings
+from praxis.webhooks.svix import verify_svix_signature
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+logger = structlog.get_logger()
 
-from praxis.config import Settings, get_settings
-from praxis.models.schemas import InboundEmailPayload, WebhookResponse
-from praxis.webhooks.svix import verify_webhook
-
-router = APIRouter(tags=["webhooks"])
-
-# Type alias for settings dependency (avoids B008: Depends in default position)
-SettingsDep = Annotated[Settings, Depends(get_settings)]
+router = APIRouter()
 
 
-@router.post("/email", response_model=WebhookResponse)
-async def receive_email(
-    request: Request,
-    settings: SettingsDep,
-    svix_id: str | None = Header(default=None, alias="svix-id"),
-    svix_timestamp: str | None = Header(default=None, alias="svix-timestamp"),
-    svix_signature: str | None = Header(default=None, alias="svix-signature"),
-) -> WebhookResponse:
-    """Receive and verify an inbound email webhook from AgentMail.
+@router.post("/email", status_code=status.HTTP_200_OK)
+async def receive_email(request: Request) -> dict:
+    """Receive and verify an AgentMail webhook.
 
-    Verifies the Svix-compatible signature before processing the payload.
-    Returns ``200 OK`` with the event ID on success.
+    1. Read the raw body (needed for signature verification).
+    2. Verify the Svix-compatible HMAC-SHA256 signature.
+    3. Parse the payload and extract the event ID.
+    4. Return 200 OK with the event ID.
+
+    In Phase 2, this handler will initialize the LangGraph state
+    and invoke the compiled graph.
     """
-    body = await request.body()
+    raw_body = await request.body()
+    settings = get_settings()
 
-    # ── Validate required headers ───────────────────────────────────
-    if not all([svix_id, svix_timestamp, svix_signature]):
+    # Extract Svix headers
+    svix_id = request.headers.get("svix-id", "")
+    svix_timestamp = request.headers.get("svix-timestamp", "")
+    svix_signature = request.headers.get("svix-signature", "")
+
+    # Verify required headers are present
+    if not svix_id or not svix_timestamp or not svix_signature:
+        logger.warning("webhook.missing_headers", has_id=bool(svix_id))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing required Svix headers (svix-id, svix-timestamp, svix-signature)",
+            detail="Missing Svix signature headers",
         )
 
-    # ── Verify signature ────────────────────────────────────────────
-    secret = settings.svix_webhook_secret.get_secret_value()
-    if not secret:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Webhook secret not configured",
-        )
-
-    if not verify_webhook(body, svix_id, svix_timestamp, svix_signature, secret):
+    # Verify signature
+    if not verify_svix_signature(
+        raw_body=raw_body,
+        svix_id=svix_id,
+        svix_timestamp=svix_timestamp,
+        svix_signature=svix_signature,
+        secret=settings.agentmail_webhook_secret,
+    ):
+        logger.warning("webhook.invalid_signature", svix_id=svix_id)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid webhook signature",
         )
 
-    # ── Parse payload ───────────────────────────────────────────────
+    # Parse payload
     try:
-        payload = InboundEmailPayload.model_validate_json(body)
-    except Exception as exc:
+        payload = orjson.loads(raw_body)
+    except orjson.JSONDecodeError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid payload: {exc}",
-        ) from exc
+            detail="Invalid JSON payload",
+        ) from e
 
-    return WebhookResponse(event_id=payload.id)
+    event_id = payload.get("id", "")
+    event_type = payload.get("type", "email.received")
+
+    logger.info("webhook.received", event_id=event_id, event_type=event_type)
+
+    return {
+        "status": "accepted",
+        "event_id": event_id,
+        "message": "Email received and verified",
+    }

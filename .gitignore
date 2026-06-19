@@ -1,17 +1,34 @@
-# Python-generated files
+# Environment & Secrets
+.env
+.env.local
+.env.production
+
+# Python
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
 build/
 dist/
-wheels/
-*.egg-info
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Virtual environments
-.venv
-venv/
-
-# Test / coverage artifacts
-.coverage
-.pytest_cache/
+# Tooling Caches
 .ruff_cache/
-htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

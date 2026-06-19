@@ -1,58 +1,59 @@
-"""FastAPI application entry point for PRAXIS v2.0.
+"""FastAPI application entry point and lifespan management."""
 
-Run with::
-
-    uv run uvicorn praxis.main:app --reload
-"""
+from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
+import structlog
 from fastapi import FastAPI
 
+from praxis import __version__
 from praxis.config import get_settings
-from praxis.models.schemas import HealthResponse
-from praxis.router.concurrency import UmansConcurrencyRouter
+from praxis.router import UmansConcurrencyRouter
 from praxis.webhooks.email import router as webhook_router
+
+logger = structlog.get_logger()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage application lifecycle — create and cleanup the concurrency router."""
+    """Application lifespan: create and tear down the concurrency router."""
     settings = get_settings()
-
-    router = UmansConcurrencyRouter(
-        base_url=settings.umans_api_base_url,
-        api_key=settings.umans_api_key.get_secret_value(),
-        kimi_limit=settings.kimi_concurrency_limit,
-        glm_limit=settings.glm_concurrency_limit,
-        qwen_limit=settings.qwen_concurrency_limit,
+    umans_router = UmansConcurrencyRouter(settings=settings)
+    app.state.umans_router = umans_router
+    logger.info(
+        "app.startup",
+        version=__version__,
+        environment=settings.environment,
     )
-    app.state.umans_router = router
 
     yield
 
-    await router.close()
+    await umans_router.close()
+    logger.info("app.shutdown")
 
 
-settings = get_settings()
 app = FastAPI(
-    title=settings.app_name,
-    version=settings.app_version,
+    title="PRAXIS v2.0",
     description="Native asynchronous enterprise email agent",
+    version=__version__,
     lifespan=lifespan,
 )
 
+# Include route groups
+app.include_router(webhook_router, prefix="/webhook", tags=["webhooks"])
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
+
+@app.get("/health", tags=["health"])
+async def health_check() -> dict[str, Any]:
     """Health check endpoint.
 
-    Returns the application status and version.  Sub-service statuses are
-    ``"ready"`` for the API and ``"pending"`` for infrastructure that will
-    be connected in later phases.
+    Quality Gate 1: Application boots successfully and passes the health check.
     """
-    return HealthResponse(version=settings.app_version)
-
-
-app.include_router(webhook_router, prefix="/webhook")
+    return {
+        "status": "ok",
+        "version": __version__,
+        "services": {"api": "ready"},
+    }

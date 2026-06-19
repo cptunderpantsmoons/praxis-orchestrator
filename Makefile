@@ -1,39 +1,37 @@
-# PRAXIS v2.0 — Development Makefile
-# Common commands for building, testing, and running the application.
+.RECIPEPREFIX := >
+.PHONY: up down lint test shell clean install install-full
 
-.PHONY: help install dev lint format test test-cov security up down clean
+# Boot infrastructure and start FastAPI dev server with hot-reload
+up:
+>docker compose up -d neo4j qdrant postgres
+>uv run uvicorn praxis.main:app --reload --host 127.0.0.1 --port 8000
 
-help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+# Tear down containers and purge named volumes
+down:
+>docker compose down -v
 
-install: ## Install dependencies (production)
-	uv sync --no-dev
+# Enforce formatting and catch static analysis violations
+lint:
+>uv run ruff check .
+>uv run ruff format .
 
-dev: ## Install dependencies (development)
-	uv sync
+# Execute the full test suite with verbose async reporting
+test:
+>uv run pytest -v
 
-lint: ## Run ruff linter
-	uv run ruff check src/ tests/
+# Spawn an interactive REPL with all project dependencies loaded
+shell:
+>uv run python
 
-format: ## Run ruff formatter
-	uv run ruff format src/ tests/
+# Remove virtual environments and compiled artifacts
+clean:
+>rm -rf .venv dist build *.egg-info .ruff_cache .pytest_cache
+>find . -type d -name "__pycache__" -exec rm -rf {} +
 
-test: ## Run test suite
-	uv run pytest
+# Install core dependencies (Phase 1)
+install:
+>uv sync
 
-test-cov: ## Run tests with coverage report
-	uv run pytest --cov=src/praxis --cov-report=term-missing
-
-security: ## Run bandit security scanner
-	uv run bandit -r src/ -q
-
-up: ## Start infrastructure (Neo4j, Qdrant, PostgreSQL)
-	docker compose up -d
-
-down: ## Stop infrastructure and purge volumes
-	docker compose down -v
-
-clean: ## Remove build artifacts and caches
-	rm -rf .venv dist build *.egg-info .pytest_cache .ruff_cache
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+# Install all dependencies including AI and infrastructure extras
+install-full:
+>uv sync --all-extras

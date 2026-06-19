@@ -1,16 +1,13 @@
 """Svix-compatible webhook signature verification.
 
-Implements HMAC-SHA256 verification following the Svix webhook specification:
-https://docs.svix.com/receiving/verifying-payloads
+Implements HMAC-SHA256 signature verification following the Svix
+webhook signing specification:
+  https://docs.svix.com/receiving/verifying-payloads
 
-The verification pipeline:
-
-1.  Extract ``svix-id``, ``svix-timestamp``, ``svix-signature`` headers.
-2.  Enforce a 5-minute clock-skew tolerance on the timestamp.
-3.  Construct the signed content: ``"{svix_id}.{svix_timestamp}.{raw_body}"``.
-4.  Compute ``HMAC-SHA256(secret, signed_content)`` → base64-encode.
-5.  Compare against each ``v1,<signature>`` in the signature header
-    using constant-time comparison.
+The signed payload is: ``{svix_id}.{svix_timestamp}.{raw_body}``
+The signature is: ``base64(HMAC-SHA256(secret, signed_payload))``
+The signature header contains: ``v1,{base64_signature}`` (space-separated
+for multiple signatures).
 """
 
 from __future__ import annotations
@@ -20,89 +17,128 @@ import hashlib
 import hmac
 import time
 
-# Maximum allowed clock skew between sender and receiver (5 minutes)
-MAX_TIMESTAMP_DRIFT_SECONDS = 300
+# Maximum allowed clock skew between sender and receiver (seconds).
+DEFAULT_TOLERANCE_SECONDS = 300  # 5 minutes
 
 
-def _prepare_secret(secret: str) -> bytes:
-    """Convert a Svix webhook secret string to raw key bytes.
+def _decode_secret(secret: str) -> bytes:
+    """Decode the Svix webhook signing secret.
 
-    Handles secrets with or without the ``whsec_`` prefix.
-    The secret is base64-decoded to obtain the raw HMAC key.
+    Svix secrets use the ``whsec_`` prefix followed by a base64-encoded key.
+    If the prefix is absent, treat the value as a raw secret string.
     """
-    raw = secret.encode() if isinstance(secret, str) else secret
-    if raw.startswith(b"whsec_"):
-        raw = raw[len(b"whsec_") :]
-    return base64.b64decode(raw)
+    if secret.startswith("whsec_"):
+        return base64.b64decode(secret[len("whsec_") :])
+    return secret.encode("utf-8")
 
 
-def verify_webhook(
-    payload: bytes,
+def compute_svix_signature(
+    raw_body: bytes,
+    svix_id: str,
+    svix_timestamp: str,
+    secret: str,
+) -> str:
+    """Compute the expected Svix signature for the given payload.
+
+    Returns the signature in header format: ``v1,{base64_signature}``.
+    """
+    secret_bytes = _decode_secret(secret)
+    signed_payload = f"{svix_id}.{svix_timestamp}.".encode() + raw_body
+    digest = hmac.new(secret_bytes, signed_payload, hashlib.sha256).digest()
+    return f"v1,{base64.b64encode(digest).decode('utf-8')}"
+
+
+def verify_svix_signature(
+    raw_body: bytes,
     svix_id: str,
     svix_timestamp: str,
     svix_signature: str,
     secret: str,
+    *,
+    tolerance_seconds: int = DEFAULT_TOLERANCE_SECONDS,
+    current_time: int | None = None,
 ) -> bool:
     """Verify a Svix-compatible webhook signature.
 
     Args:
-        payload: Raw request body bytes.
-        svix_id: Value of the ``svix-id`` header.
-        svix_timestamp: Value of the ``svix-timestamp`` header (Unix epoch seconds).
-        svix_signature: Value of the ``svix-signature`` header.
-        secret: Webhook signing secret (with or without ``whsec_`` prefix).
+        raw_body: Raw request body bytes (must be the exact bytes received).
+        svix_id: The ``svix-id`` header value.
+        svix_timestamp: The ``svix-timestamp`` header value (Unix epoch seconds).
+        svix_signature: The ``svix-signature`` header value.
+        secret: The webhook signing secret (``whsec_...`` or raw string).
+        tolerance_seconds: Max allowed clock skew (default: 300s = 5 min).
+        current_time: Override for the current time (for testing).
 
     Returns:
-        ``True`` if the signature is valid and the timestamp is within tolerance.
+        True if the signature is valid and within the timestamp tolerance.
     """
-    # ── Timestamp freshness check ───────────────────────────────────
+    # Validate timestamp
     try:
         timestamp = int(svix_timestamp)
     except (ValueError, TypeError):
         return False
 
-    now = int(time.time())
-    if abs(now - timestamp) > MAX_TIMESTAMP_DRIFT_SECONDS:
+    now = current_time if current_time is not None else int(time.time())
+    if abs(now - timestamp) > tolerance_seconds:
         return False
 
-    # ── Compute expected signature ──────────────────────────────────
-    key = _prepare_secret(secret)
-    signed_content = f"{svix_id}.{svix_timestamp}.".encode() + payload
-    expected = base64.b64encode(
-        hmac.new(key, signed_content, hashlib.sha256).digest()
-    ).decode()
+    # Compute expected signature
+    expected = compute_svix_signature(raw_body, svix_id, svix_timestamp, secret)
 
-    # ── Constant-time comparison against provided signatures ────────
-    # The header may contain multiple signatures: "v1,<sig> v1,<sig2>"
-    for sig_part in svix_signature.split(" "):
-        if "," not in sig_part:
-            continue
-        version, signature = sig_part.split(",", 1)
-        if version == "v1" and hmac.compare_digest(signature, expected):
+    # Compare against provided signatures
+    # The svix-signature header may contain multiple space-separated signatures.
+    provided_signatures = svix_signature.split(" ")
+    for sig in provided_signatures:
+        if hmac.compare_digest(expected, sig):
             return True
 
     return False
 
 
+# ── Convenience aliases ────────────────────────────────────────────
+
+
+def verify_webhook(
+    raw_body: bytes,
+    svix_id: str | None,
+    svix_timestamp: str | None,
+    svix_signature: str | None,
+    secret: str,
+) -> bool:
+    """Verify a Svix-compatible webhook (convenience wrapper).
+
+    Handles ``None`` values gracefully by treating them as empty strings,
+    making it suitable for direct use with FastAPI header extraction
+    where headers may be absent.
+    """
+    return verify_svix_signature(
+        raw_body=raw_body,
+        svix_id=svix_id or "",
+        svix_timestamp=svix_timestamp or "",
+        svix_signature=svix_signature or "",
+        secret=secret,
+    )
+
+
 def sign_for_testing(
-    payload: bytes,
+    raw_body: bytes,
     msg_id: str,
     secret: str,
     *,
     timestamp: int | None = None,
 ) -> tuple[str, str, str]:
-    """Generate a valid Svix-compatible signature for testing.
+    """Compute a valid Svix signature triple for test payloads.
+
+    Args:
+        raw_body: Raw request body bytes.
+        msg_id: The ``svix-id`` to use.
+        secret: The webhook signing secret.
+        timestamp: Optional override (defaults to current time).
 
     Returns:
-        Tuple of ``(svix_id, svix_timestamp, svix_signature)`` header values.
+        ``(svix_id, svix_timestamp, svix_signature)`` — ready to use as
+        HTTP headers in test requests.
     """
-    if timestamp is None:
-        timestamp = int(time.time())
-
-    key = _prepare_secret(secret)
-    signed_content = f"{msg_id}.{timestamp}.".encode() + payload
-    signature = base64.b64encode(
-        hmac.new(key, signed_content, hashlib.sha256).digest()
-    ).decode()
-
-    return msg_id, str(timestamp), f"v1,{signature}"
+    ts = timestamp if timestamp is not None else int(time.time())
+    sig = compute_svix_signature(raw_body, msg_id, str(ts), secret)
+    return msg_id, str(ts), sig

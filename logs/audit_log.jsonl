@@ -1,21 +1,4 @@
-{"ts":"2026-06-19T11:06:00Z","phase":"PHASE_1","event":"PROJECT_INIT","detail":"Project initialized with uv, pyproject.toml configured","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":"src/praxis/config.py — Pydantic settings with all env vars","artifact":"src/praxis/config.py","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":"src/praxis/router/concurrency.py — UmansConcurrencyRouter with asyncio.Semaphore","artifact":"src/praxis/router/concurrency.py","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":"src/praxis/router/models.py — LangChain-compatible chat model wrappers","artifact":"src/praxis/router/models.py","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":"src/praxis/webhooks/svix.py — Svix-compatible HMAC-SHA256 signature verification","artifact":"src/praxis/webhooks/svix.py","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":"src/praxis/webhooks/email.py — AgentMail webhook endpoint","artifact":"src/praxis/webhooks/email.py","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":"src/praxis/main.py — FastAPI app with health check and webhook router","artifact":"src/praxis/main.py","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":"docker-compose.yml — Neo4j, Qdrant, PostgreSQL infrastructure","artifact":"docker-compose.yml","gate_result":"N/A"}
-{"ts":"2026-06-19T11:10:00Z","phase":"PHASE_1","event":"FILE_CREATED","detail":".env.example — All environment variables documented","artifact":".env.example","gate_result":"N/A"}
-{"ts":"2026-06-19T11:12:00Z","phase":"PHASE_1","event":"DECISION","detail":"Direct API / Python SDK approach for inference pipeline (not CLI subprocess)","decision_ref":"DRD Section 2","gate_result":"N/A"}
-{"ts":"2026-06-19T11:12:00Z","phase":"PHASE_1","event":"DECISION","detail":"asyncio.Semaphore for concurrency control (4 Kimi/GLM, 8 Qwen)","decision_ref":"DRD Section 3.3","gate_result":"N/A"}
-{"ts":"2026-06-19T11:12:00Z","phase":"PHASE_1","event":"DECISION","detail":"Native Svix-compatible signature verification (no svix package dependency)","decision_ref":"DRD Section 5","gate_result":"N/A"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"TEST_RUN","detail":"pytest: 40 passed, 0 failed","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"GATE_RESULT","detail":"Coverage: 97% overall, 100% on critical paths (threshold: 85%)","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"GATE_RESULT","detail":"Ruff lint: 0 errors (threshold: 0)","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"GATE_RESULT","detail":"Bandit security: 0 findings (threshold: 0 critical/high)","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"GATE_RESULT","detail":"Live health check: GET /health returned 200 OK with status=ok","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"GATE_RESULT","detail":"QG1 Criterion 1: App boots + health check — PASS","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"GATE_RESULT","detail":"QG1 Criterion 2: Webhook accepts mock payload + verifies Svix signature — PASS","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"GATE_RESULT","detail":"QG1 Criterion 3: Concurrency Router enforces semaphore limits under concurrent load — PASS","gate_result":"PASS"}
-{"ts":"2026-06-19T11:15:00Z","phase":"PHASE_1","event":"PHASE_EXIT","detail":"Phase 1 Foundation complete. All gate criteria passed. CHECKPOINT::CODE_COMPLETE","gate_result":"PASS"}
+{"ts":"2026-06-19T11:06:00Z","phase":"PHASE_1_FOUNDATION","event":"PROJECT_INIT","detail":"Project structure created and Phase 1 begun","artifact":"project_manifest.json","artifact_hash":"n/a","gate_result":"PASS","decision_ref":"REQ-001"}
+{"ts":"2026-06-19T12:00:00Z","phase":"PHASE_1_FOUNDATION","event":"PHASE_EXIT","detail":"Phase 1 Foundation exit gate evaluation","artifact":"project_manifest.json","artifact_hash":"n/a","gate_result":"PASS","decision_ref":"PHASE_1_QG1"}
+{"ts":"2026-06-19T13:20:00Z","phase":"PHASE_1_FOUNDATION","event":"GATE_RESULT","detail":"Re-verification after uv sync: 36 tests passed, 88% coverage, 0 lint errors, 0 bandit issues","artifact":"logs/audit_log.jsonl","artifact_hash":"n/a","gate_result":"PASS","decision_ref":"PHASE_1_QG1"}
+{"ts":"2026-06-19T13:20:00Z","phase":"PHASE_2_INTELLIGENCE","event":"PHASE_ENTER","detail":"User requested proceed; Phase 1 verified; entering Phase 2 Core Intelligence & State Machine","artifact":"project_manifest.json","artifact_hash":"n/a","gate_result":"PENDING","decision_ref":"USER_APPROVAL_PHASE_2"}

@@ -1,15 +1,1 @@
-"""Pydantic schemas for PRAXIS."""
-
-from praxis.models.schemas import (
-    EmailData,
-    HealthResponse,
-    InboundEmailPayload,
-    WebhookResponse,
-)
-
-__all__ = [
-    "EmailData",
-    "HealthResponse",
-    "InboundEmailPayload",
-    "WebhookResponse",
-]
+"""Pydantic schemas and model configurations for PRAXIS v2.0."""

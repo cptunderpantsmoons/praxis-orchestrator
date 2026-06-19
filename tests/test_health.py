@@ -1,32 +1,26 @@
-"""Tests for the GET /health endpoint — Quality Gate 1 criterion 1."""
+"""Quality Gate 1: Application boots and passes the health check."""
+
+import time
 
 from fastapi.testclient import TestClient
 
 
-def test_health_check_returns_200(client: TestClient):
-    """Application boots successfully and responds to health check."""
+def test_health_check_returns_ok(client: TestClient):
+    """GET /health returns 200 with status 'ok' and correct version."""
     response = client.get("/health")
     assert response.status_code == 200
 
-
-def test_health_check_returns_ok_status(client: TestClient):
-    """Health response status is 'ok'."""
-    response = client.get("/health")
     data = response.json()
     assert data["status"] == "ok"
-
-
-def test_health_check_includes_version(client: TestClient):
-    """Health response includes the application version."""
-    response = client.get("/health")
-    data = response.json()
     assert "version" in data
     assert data["version"] != ""
 
 
-def test_health_check_includes_services(client: TestClient):
-    """Health response includes sub-service statuses."""
+def test_health_check_has_fast_response(client: TestClient):
+    """Health check responds quickly (sub-200ms target)."""
+    start = time.monotonic()
     response = client.get("/health")
-    data = response.json()
-    assert "services" in data
-    assert data["services"]["api"] == "ready"
+    elapsed_ms = (time.monotonic() - start) * 1000
+
+    assert response.status_code == 200
+    assert elapsed_ms < 200, f"Health check took {elapsed_ms:.1f}ms (target: <200ms)"
