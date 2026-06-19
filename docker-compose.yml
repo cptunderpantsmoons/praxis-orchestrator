@@ -1,0 +1,81 @@
+# PRAXIS v2.0 — Infrastructure as Code
+# Spins up local instances of Neo4j, Qdrant, and PostgreSQL.
+#
+# Usage:
+#   docker compose up -d
+#   docker compose down -v   # purge all data
+#
+# Prerequisites: Docker and Docker Compose installed.
+
+services:
+  # ── Neo4j: Graph database for sender history & corrections ──────────
+  neo4j:
+    image: neo4j:5.20
+    container_name: praxis-neo4j
+    ports:
+      - "7687:7687"   # Bolt protocol
+      - "7474:7474"   # Browser UI
+    environment:
+      - NEO4J_AUTH=neo4j/praxis_dev_password
+      - NEO4J_dbms_memory_pagecache_size=512M
+      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/import
+      - neo4j_plugins:/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Qdrant: Vector database for semantic memory retrieval ──────────
+  qdrant:
+    image: qdrant/qdrant:1.9
+    container_name: praxis-qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    environment:
+      - QDRANT__SERVICE__API_KEY=praxis_dev_api_key
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── PostgreSQL: LangGraph checkpoint persistence ───────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: praxis-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=praxis
+      - POSTGRES_PASSWORD=praxis_dev_password
+      - POSTGRES_DB=praxis
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U praxis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_import:
+  neo4j_plugins:
+  qdrant_data:
+  postgres_data:

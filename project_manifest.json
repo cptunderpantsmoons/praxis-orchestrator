@@ -1,0 +1,62 @@
+{
+  "project_name": "PRAXIS",
+  "version": "0.1.0",
+  "description": "Native asynchronous enterprise email agent — LangGraph + Umans API + Hermes",
+  "created_at": "2026-06-19T11:06:00Z",
+  "current_phase": "PHASE_1_FOUNDATION",
+  "phase_status": "GATE_PASSED",
+  "phase_history": [
+    {
+      "phase": "PHASE_1_FOUNDATION",
+      "objective": "Establish deployment environment, secure inference pipeline with concurrency router, implement base API structure with AgentMail webhook",
+      "status": "COMPLETE",
+      "gate_result": "PASS",
+      "tasks": [
+        {"id": "1", "desc": "Initialize Python project with uv, configure ruff/pytest", "status": "PASS"},
+        {"id": "2", "desc": "Create .env.example with all environment variables", "status": "PASS"},
+        {"id": "3", "desc": "Create docker-compose for Neo4j, Qdrant, PostgreSQL", "status": "PASS"},
+        {"id": "4", "desc": "Build FastAPI application skeleton with health check", "status": "PASS"},
+        {"id": "5", "desc": "Implement UmansConcurrencyRouter (asyncio.Semaphore)", "status": "PASS"},
+        {"id": "6", "desc": "Create LangChain-compatible chat model wrappers", "status": "PASS"},
+        {"id": "7", "desc": "Implement AgentMail webhook with Svix signature verification", "status": "PASS"}
+      ]
+    }
+  ],
+  "gate_thresholds": {
+    "test_coverage_critical_paths": 1.0,
+    "test_coverage_overall": 0.85,
+    "max_critical_bugs": 0,
+    "max_high_bugs": 0,
+    "lint_errors": 0
+  },
+  "gate_results": {
+    "phase_1": {
+      "tests_passing": "40/40",
+      "test_coverage_overall": 0.97,
+      "test_coverage_critical_paths": 1.0,
+      "lint_errors": 0,
+      "security_findings": 0,
+      "app_boots": true,
+      "health_check": "PASS",
+      "webhook_verification": "PASS",
+      "concurrency_router": "PASS",
+      "gate_result": "PASS"
+    }
+  },
+  "active_requirements": [
+    "REQ-001: FastAPI application boots and passes /health check",
+    "REQ-002: AgentMail webhook accepts mock payload, verifies Svix signature, returns 200",
+    "REQ-003: UmansConcurrencyRouter enforces semaphore limits (4 Kimi/GLM, 8 Qwen) under concurrent load",
+    "REQ-004: LangChain-compatible chat model wrappers route through concurrency router",
+    "REQ-005: docker-compose.yml provisions Neo4j, Qdrant, PostgreSQL",
+    "REQ-006: All environment variables documented in .env.example"
+  ],
+  "skill_allocation": {
+    "PHASE_1": ["plan", "spike", "kanban-orchestrator", "test-driven-development"],
+    "PHASE_2": ["test-driven-development", "simplify-code"],
+    "PHASE_3": ["systematic-debugging", "python-debugpy", "dogfood"],
+    "PHASE_4": ["requesting-code-review", "github-code-review", "codebase-inspection"],
+    "PHASE_5": ["github-pr-workflow", "github-repo-management"]
+  },
+  "audit_log": "logs/audit_log.jsonl"
+}
