@@ -17,7 +17,9 @@ def load_env() -> dict[str, str]:
     for line in ENV_FILE.read_text().splitlines():
         if "=" in line and not line.strip().startswith("#"):
             k, v = line.split("=", 1)
-            out[k.strip()] = v.strip()
+            # Strip quotes if present
+            v = v.strip().strip('"').strip("'")
+            out[k.strip()] = v
     return out
 
 

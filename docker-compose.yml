@@ -6,7 +6,7 @@ services:
       - "127.0.0.1:7687:7687"
       - "127.0.0.1:7474:7474"
     environment:
-      - NEO4J_AUTH=neo4j/praxis_dev_password
+      - NEO4J_AUTH=neo4j/...word
       - NEO4J_apoc_export_file_enabled=true
       - NEO4J_apoc_import_file_enabled=true
       - NEO4J_apoc_import_file_use__neo4j__config=true
@@ -16,6 +16,8 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
     restart: unless-stopped
+    networks:
+      - praxis_net
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -24,10 +26,12 @@ services:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     environment:
-      - QDRANT__SERVICE__API_KEY=praxis_dev_api_key
+      - QDRANT__SERVICE__API_KEY=***_key
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
+    networks:
+      - praxis_net
 
   postgres:
     image: postgres:16-alpine
@@ -36,14 +40,51 @@ services:
       - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=praxis
-      - POSTGRES_PASSWORD=praxis_dev_password
+      - POSTGRES_PASSWORD=***_password
       - POSTGRES_DB=praxis
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - praxis_net
+
+  app:
+    image: praxis:0.1.0
+    container_name: praxis-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - QDRANT_URL=http://qdrant:6333
+      - POSTGRES_DSN=postgresql://praxis:***@postgres:5432/praxis
+    depends_on:
+      neo4j:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_started
+    networks:
+      - praxis_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   neo4j_data:
   neo4j_logs:
   qdrant_data:
   postgres_data:
+
+networks:
+  praxis_net:
+    driver: bridge

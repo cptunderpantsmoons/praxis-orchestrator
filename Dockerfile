@@ -18,11 +18,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy dependency files first (better layer caching)
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies into a virtual environment
-# --frozen: respect uv.lock exactly (reproducible builds)
-# --no-dev: skip dev dependencies (pytest, ruff, etc.)
-# --no-install-project: don't install the project itself yet
-RUN uv sync --frozen --no-dev --no-install-project
+# Install ALL dependencies (base + ai + infra + email) into a virtual environment
+# We need langgraph, neo4j, qdrant-client, asyncpg, langgraph-checkpoint-postgres,
+# agentmail which are in the [ai], [infra], and [email] optional-dependency groups.
+# Step 1: sync the base deps from uv.lock (respects --frozen for reproducibility)
+# Step 2: pip-install the optional extras on top
+RUN uv sync --frozen --no-dev --no-install-project && \
+    uv pip install --python /app/.venv/bin/python \
+        "langgraph>=0.0.50" \
+        "langchain-openai>=0.1.0" \
+        "neo4j>=5.20.0" \
+        "qdrant-client>=1.8.0" \
+        "asyncpg>=0.29.0" \
+        "psycopg[binary]>=3.1.0" \
+        "langgraph-checkpoint-postgres>=2.0.0" \
+        "agentmail>=0.1.0"
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
