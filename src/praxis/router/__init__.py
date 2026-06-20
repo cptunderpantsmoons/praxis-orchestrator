@@ -100,6 +100,57 @@ class UmansConcurrencyRouter:
             finally:
                 self._active[model_name] -= 1
 
+    async def embed(
+        self,
+        model_name: str,
+        input_text: str,
+        **kwargs: Any,
+    ) -> list[float]:
+        """Generate an embedding vector, respecting the model's semaphore.
+
+        Unlike :meth:`invoke`, this returns the raw embedding vector rather
+        than a chat-completion response. It is intended for embedding models
+        registered with ``family="embed"`` (e.g. ``umans-embed-small``).
+
+        Args:
+            model_name: An embedding model name (must be registered).
+            input_text: The text to embed.
+            **kwargs: Extra payload fields (e.g. ``encoding_format``).
+
+        Returns:
+            A list of floats representing the embedding.
+
+        Raises:
+            ValueError: If model_name is not registered.
+            httpx.HTTPStatusError: On non-2xx API responses.
+        """
+        config = get_model_config(model_name)
+        if config.family != "embed":
+            msg = (
+                f"Model {model_name!r} is not an embedding model "
+                f"(family={config.family!r}). Use invoke() for chat models."
+            )
+            raise ValueError(msg)
+        semaphore = self._semaphores[model_name]
+
+        async with semaphore:
+            self._active[model_name] += 1
+            self._peak[model_name] = max(self._peak[model_name], self._active[model_name])
+            try:
+                start = time.monotonic()
+                vector = await self._call_embed(model_name, input_text, **kwargs)
+                elapsed_ms = (time.monotonic() - start) * 1000
+                logger.info(
+                    "umans.embed",
+                    model=model_name,
+                    family=config.family,
+                    elapsed_ms=round(elapsed_ms, 2),
+                    vector_dim=len(vector),
+                )
+                return vector
+            finally:
+                self._active[model_name] -= 1
+
     @asynccontextmanager
     async def acquire(self, model_name: str) -> AsyncIterator[None]:
         """Acquire a concurrency slot without making an API call.
@@ -177,6 +228,42 @@ class UmansConcurrencyRouter:
         )
         resp.raise_for_status()
         return orjson.loads(resp.content)
+
+    async def _call_embed(
+        self,
+        model_name: str,
+        input_text: str,
+        **kwargs: Any,
+    ) -> list[float]:
+        """Make the actual HTTP call to the Umans embeddings endpoint."""
+        client = await self._get_client()
+        payload: dict[str, Any] = {
+            "model": model_name,
+            "input": input_text,
+            **kwargs,
+        }
+        base = str(client.base_url).rstrip("/")
+        url = (
+            "/embeddings"
+            if base
+            else (f"{self._settings.umans_base_url.rstrip('/')}/embeddings")
+        )
+        resp = await client.post(
+            url,
+            content=orjson.dumps(payload),
+        )
+        resp.raise_for_status()
+        body = orjson.loads(resp.content)
+        # OpenAI-compatible: {"data": [{"embedding": [...]}]}
+        data = body.get("data") or []
+        if not data:
+            msg = f"Umans embeddings endpoint returned no data: {body}"
+            raise ValueError(msg)
+        embedding = data[0].get("embedding") or []
+        if not embedding:
+            msg = f"Umans embeddings endpoint returned empty vector: {body}"
+            raise ValueError(msg)
+        return [float(x) for x in embedding]
 
 
 __all__ = ["UmansConcurrencyRouter"]

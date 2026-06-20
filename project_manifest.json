@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Native asynchronous enterprise email agent — LangGraph + Umans API + Hermes",
   "created_at": "2026-06-19T11:06:00Z",
-  "current_phase": "PHASE_3_TESTING",
+  "current_phase": "PHASE_4_REVIEW",
   "phase_status": "IN_PROGRESS",
   "phase_history": [
     {
@@ -40,15 +40,32 @@
     {
       "phase": "PHASE_3_TESTING",
       "objective": "Execute static analysis, integration tests, edge cases, and proof-of-function evidence",
-      "status": "IN_PROGRESS",
-      "gate_result": "PENDING",
+      "status": "COMPLETE",
+      "gate_result": "PASS",
       "tasks": [
         {"id": "301", "desc": "Run bandit security scan (no high/critical findings)", "status": "PASS"},
         {"id": "302", "desc": "Add direct unit tests for REQ-205 dummy_search / dummy_calculator tools", "status": "PASS"},
         {"id": "303", "desc": "Add hermes_client retry, 4xx, 429, and timeout tests", "status": "PASS"},
         {"id": "304", "desc": "Verify coverage >= 85% overall", "status": "PASS"},
-        {"id": "305", "desc": "Generate evidence package (coverage html, bandit report, screenshots)", "status": "PENDING"},
-        {"id": "306", "desc": "Run exploratory QA / dogfood suite", "status": "PENDING"}
+        {"id": "305", "desc": "Generate evidence package (coverage html, bandit report, screenshots)", "status": "PASS"},
+        {"id": "306", "desc": "Run exploratory QA / dogfood suite", "status": "PASS"},
+        {"id": "307", "desc": "Implement REQ-306: embedding_node + Qdrant metadata persistence + 17 tests", "status": "PASS"},
+        {"id": "308", "desc": "Wire embedding_node into build_graph (context_loading -> embedding -> react)", "status": "PASS"},
+        {"id": "309", "desc": "Fix test_graph_checkpoint_thread_isolation flake (lift mock.patch out of asyncio.gather)", "status": "PASS"},
+        {"id": "310", "desc": "Add umans-embed-small to model registry + UmansConcurrencyRouter.embed() + _call_embed()", "status": "PASS"}
+      ]
+    },
+    {
+      "phase": "PHASE_4_REVIEW",
+      "objective": "Perform code review, security scan, performance baseline, and hardening",
+      "status": "IN_PROGRESS",
+      "gate_result": "PENDING",
+      "tasks": [
+        {"id": "401", "desc": "Run code review simulation (requesting-code-review)", "status": "PENDING"},
+        {"id": "402", "desc": "Run codebase inspection (LOC, complexity, language breakdown)", "status": "PENDING"},
+        {"id": "403", "desc": "Dependency vulnerability scan", "status": "PENDING"},
+        {"id": "404", "desc": "OWASP Top 10 checklist", "status": "PENDING"},
+        {"id": "405", "desc": "Documentation completeness audit", "status": "PENDING"}
       ]
     }
   ],
@@ -84,14 +101,31 @@
       "gate_result": "PASS"
     },
     "phase_3": {
+      "tests_passing": "150/150",
+      "test_coverage_overall": 0.87,
+      "test_coverage_critical_paths": 1.0,
+      "lint_errors": 0,
+      "security_findings": 0,
+      "triage_structured_output": "PASS",
+      "react_dummy_tool": "PASS",
+      "checkpoint_persist_retrieve": "PASS",
+      "req_301_hermes_client": "PASS",
+      "req_302_qdrant_client": "PASS",
+      "req_303_correction_node": "PASS",
+      "req_304_corrections_in_react": "PASS",
+      "req_305_fast_path": "PASS",
+      "req_306_embed_sender": "PASS",
+      "req_307_templates": "PASS",
+      "req_308_quality_gate": "PASS",
+      "evidence_package": "screenshots/phase3_evidence.tar.gz (234K)",
+      "gate_result": "PASS"
+    },
+    "phase_4": {
       "tests_passing": "PENDING",
       "test_coverage_overall": "PENDING",
       "test_coverage_critical_paths": "PENDING",
       "lint_errors": "PENDING",
       "security_findings": "PENDING",
-      "triage_structured_output": "PENDING",
-      "react_dummy_tool": "PENDING",
-      "checkpoint_persist_retrieve": "PENDING",
       "gate_result": "PENDING"
     }
   },

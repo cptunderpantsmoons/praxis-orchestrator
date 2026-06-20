@@ -7,6 +7,7 @@ for upserting, searching, and managing sender embeddings.
 from __future__ import annotations
 
 from datetime import UTC
+from typing import Any
 
 import structlog
 from qdrant_client import AsyncQdrantClient
@@ -42,20 +43,72 @@ class QdrantSenderClient:
 
     # ── Public API ────────────────────────────────────────────
 
-    async def upsert_sender(self, email: str, embedding: list[float]) -> bool:
-        """Store or update a sender's embedding in Qdrant."""
+    async def upsert_sender(
+        self,
+        email: str,
+        embedding: list[float],
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Store or update a sender's embedding in Qdrant.
+
+        Args:
+            email: Sender's email address; used as the Qdrant point id.
+            embedding: Vector representation of the sender.
+            metadata: Optional payload fields. The service always sets
+                ``first_seen`` (only on insert) and ``last_seen`` (every
+                call). If ``metadata`` contains ``total_emails``, it is
+                stored verbatim; otherwise it is set to 1 on first upsert
+                and incremented on subsequent calls when an existing
+                point is found.
+
+        Returns:
+            True on success, False on any backend error.
+        """
         await self._ensure_client()
+        now_iso = _now_iso()
+        # Fetch existing point (if any) to track first_seen + total_emails
+        existing_metadata: dict[str, Any] = {}
+        try:
+            existing = await self._client.retrieve(
+                collection_name=self.collection,
+                ids=[email],
+                with_payload=True,
+                with_vectors=False,
+            )
+            if existing and existing[0].payload:
+                existing_metadata = dict(existing[0].payload.get("metadata") or {})
+        except Exception:
+            # If retrieve fails, proceed with empty metadata; last_seen
+            # will be set, but first_seen will also be 'now'.
+            existing_metadata = {}
+
+        total_emails = int(existing_metadata.get("total_emails", 0)) + 1
+        first_seen = existing_metadata.get("first_seen", now_iso)
+
+        merged_metadata: dict[str, Any] = {
+            "first_seen": first_seen,
+            "last_seen": now_iso,
+            "total_emails": total_emails,
+            "sender_domain": email.split("@", 1)[-1] if "@" in email else "",
+        }
+        if metadata:
+            merged_metadata.update(metadata)
+
         point = PointStruct(
             id=email,
             vector=embedding,
             payload={
                 "email": email,
-                "metadata": {"first_seen": _now_iso(), "last_seen": _now_iso()},
+                "metadata": merged_metadata,
             },
         )
         try:
             await self._client.upsert(self.collection, points=[point])
-            logger.info("qdrant.upsert_sender", email=email)
+            logger.info(
+                "qdrant.upsert_sender",
+                email=email,
+                total_emails=total_emails,
+            )
             return True
         except Exception as exc:
             logger.warning("qdrant.upsert_failed", email=email, error=str(exc))

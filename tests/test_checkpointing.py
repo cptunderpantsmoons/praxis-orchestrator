@@ -160,29 +160,40 @@ async def test_graph_checkpoint_multiple_threads(
 async def test_graph_checkpoint_thread_isolation(
     graph,
 ) -> None:
-    """Concurrent graph runs on different threads don't interfere."""
+    """Concurrent graph runs on different threads don't interfere.
+
+    Patches are applied at the module level for the entire test so
+    they survive the ``asyncio.gather`` of 6 concurrent graph runs.
+    The ``_get_router_and_model`` patch prevents the real
+    ``UmansConcurrencyRouter`` from being instantiated (which would
+    hit the real Umans API and 404).
+    """
     num_threads = 6
     mock_model = _make_mock_model(
         '{"priority": "normal", "intent": "general_inquiry", "sentiment": "neutral", "is_spam": false, "sender_vip": false, "confidence": 0.5}'
     )
-
-    async def run_graph(tid: str) -> str:
-        thread = {"configurable": {"thread_id": tid}}
-        state: AgentState = {
-            "email_content": InboundEmail(
-                message_id=tid,
-                sender=f"user{tid}@example.com",
-                subject=f"Thread {tid}",
-                body=f"Body for {tid}",
-            ),
-        }
-        with patch("praxis.graph.nodes.UmansChatModel.create", return_value=mock_model):
+    # Module-level patch for the entire test: prevents any real router
+    # from being created inside the graph nodes.
+    with patch(
+        "praxis.graph.nodes._get_router_and_model",
+        return_value=(None, mock_model),
+    ):
+        async def run_graph(tid: str) -> str:
+            thread = {"configurable": {"thread_id": tid}}
+            state: AgentState = {
+                "email_content": InboundEmail(
+                    message_id=tid,
+                    sender=f"user{tid}@example.com",
+                    subject=f"Thread {tid}",
+                    body=f"Body for {tid}",
+                ),
+            }
             result = await graph.ainvoke(state, config=thread, recursion_limit=10)
-        return result["email_content"].sender
+            return result["email_content"].sender
 
-    results = await asyncio.gather(
-        *[run_graph(f"t{i}") for i in range(num_threads)]
-    )
+        results = await asyncio.gather(
+            *[run_graph(f"t{i}") for i in range(num_threads)]
+        )
     for i, sender in enumerate(results):
         assert sender == f"usert{i}@example.com", f"Thread t{i} corrupted"
 

@@ -1,6 +1,6 @@
 """Umans model registry and configuration.
 
-Defines the three Umans models, their concurrency limits, context windows,
+Defines the Umans models, their concurrency limits, context windows,
 and routing families. The GLM-5.2 model is configured with a 1,000,000-token
 context window per project requirements.
 
@@ -8,6 +8,7 @@ Semaphore limits enforced by UmansConcurrencyRouter:
     Kimi family (umans-coder)     -> 4 concurrent calls
     GLM  family (umans-glm-5.2)  -> 4 concurrent calls
     Qwen family (umans-flash)     -> 8 concurrent calls
+    Embed family (umans-embed-*)  -> 8 concurrent calls
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ class UmansModelConfig:
     """Static configuration for a single Umans inference model."""
 
     name: str
-    family: str  # "kimi", "glm", "qwen"
+    family: str  # "kimi", "glm", "qwen", "embed"
     concurrency_limit: int
     context_window: int
     max_tokens: int
@@ -57,6 +58,15 @@ UMANS_MODELS: dict[str, UmansModelConfig] = {
         max_tokens=8192,
         temperature=0.3,
         description="Memory model for Hermes state management and learning loops",
+    ),
+    "umans-embed-small": UmansModelConfig(
+        name="umans-embed-small",
+        family="embed",
+        concurrency_limit=8,
+        context_window=8192,
+        max_tokens=0,  # Embedding models do not generate tokens
+        temperature=0.0,
+        description="Embedding model for sender vector history (1536 dimensions)",
     ),
 }
 

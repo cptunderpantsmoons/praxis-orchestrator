@@ -24,6 +24,7 @@ from praxis.models.schemas import (
 )
 from praxis.router import UmansConcurrencyRouter
 from praxis.services.neo4j_client import Neo4jContextClient
+from praxis.services.qdrant_client import QdrantSenderClient
 from praxis.tools.stub_tools import dummy_calculator, dummy_search
 
 from .state import AgentState
@@ -152,6 +153,53 @@ async def context_loading_node(
 
     memory = MemoryContext(sender_history=history, corrections=corrections)
     return {"memory_context": memory}
+
+
+async def embedding_node(
+    state: AgentState,
+    config: RunnableConfig | None = None,
+) -> dict[str, Any]:
+    """Embed the sender email and persist to Qdrant (REQ-306).
+
+    Calls :class:`EmbeddingService` for a vector, then upserts it via
+    :class:`QdrantSenderClient` with structured metadata
+    (``sender_domain``, ``first_seen``, ``last_seen``, ``total_emails``).
+
+    On any failure (embedding call fails, Qdrant unavailable, etc.) the
+    node logs a warning and returns an empty ``embedding`` value rather
+    than raising — this preserves the graceful-degradation contract
+    required by REQ-306: ``Handle embedding failures gracefully``.
+    """
+    email = state["email_content"]
+    sender = email.sender
+
+    configurable = {} if config is None else (config.get("configurable") or {})
+
+    embedding_service = configurable.get("embedding_service")
+    qdrant_client = configurable.get("qdrant_client")
+
+    owns_qdrant = qdrant_client is None
+    if owns_qdrant:
+        qdrant_client = QdrantSenderClient()
+
+    try:
+        # Lazy-create the embedding service so callers can inject a mock
+        if embedding_service is None:
+            from praxis.services.embedding_service import EmbeddingService
+
+            embedding_service = EmbeddingService()
+
+        vector = await embedding_service.embed_sender(sender)
+        ok = await qdrant_client.upsert_sender(sender, vector)
+        if not ok:
+            logger.warning("embedding_node.qdrant_failed", sender=sender)
+        return {"metadata": state.get("metadata") or AgentMetadata()}
+    except Exception as exc:
+        logger.warning("embedding_node.failed", sender=sender, error=str(exc))
+        return {"metadata": state.get("metadata") or AgentMetadata()}
+    finally:
+        if owns_qdrant and qdrant_client is not None:
+            await qdrant_client.close()
 
 
 def _build_correction_section(corrections: list, sender_email: str) -> str:
@@ -487,6 +535,7 @@ __all__ = [
     "correction_node",
     "correction_stub_node",
     "discard_node",
+    "embedding_node",
     "react_node",
     "triage_node",
 ]

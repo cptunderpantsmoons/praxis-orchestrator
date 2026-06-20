@@ -17,6 +17,7 @@ from .nodes import (
     context_loading_node,
     correction_node,
     discard_node,
+    embedding_node,
     react_node,
     triage_node,
 )
@@ -61,6 +62,7 @@ def build_graph(checkpointer: Any | None = None) -> StateGraph:
 
     builder.add_node("triage", triage_node)
     builder.add_node("context_loading", context_loading_node)
+    builder.add_node("embedding", embedding_node)
     builder.add_node("react", react_node)
     builder.add_node("discard", discard_node)
     builder.add_node("correction_node", correction_node)
@@ -76,7 +78,8 @@ def build_graph(checkpointer: Any | None = None) -> StateGraph:
             "context_loading": "context_loading",
         },
     )
-    builder.add_edge("context_loading", "react")
+    builder.add_edge("context_loading", "embedding")
+    builder.add_edge("embedding", "react")
     builder.add_edge("react", END)
     builder.add_edge("discard", END)
     builder.add_edge("correction_node", END)
