@@ -39,6 +39,9 @@ infra = [
     "psycopg[binary]>=3.1.0",
     "langgraph-checkpoint-postgres>=2.0.0",
 ]
+email = [
+    "agentmail>=0.1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

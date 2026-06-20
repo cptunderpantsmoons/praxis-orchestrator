@@ -109,6 +109,32 @@ else
   fail "Unexpected status $CODE for valid signature" 4
 fi
 
+# ── 5. New event-type routing: message.delivered → 200 logged ─────
+log "[5/5] POST /webhook/email with message.delivered event (expect 200 logged)"
+TS=$(date +%s)
+MSG_ID="smoke_deliv_$$_$(date +%N)"
+PAYLOAD='{"type":"event","event_type":"message.delivered","event_id":"evt_deliv_001","delivery":{"message_id":"m_001","recipients":["alice@example.com"],"delivered_at":"2026-06-20T08:01:00Z"}}'
+SECRET_B64="${SECRET#whsec_}"
+SIG=$(SECRET_B64="$SECRET_B64" PAYLOAD="$MSG_ID.$TS.$PAYLOAD" python3 -c "
+import os, hmac, hashlib, base64
+secret = base64.b64decode(os.environ['SECRET_B64'])
+msg = os.environ['PAYLOAD'].encode('utf-8')
+digest = hmac.new(secret, msg, hashlib.sha256).digest()
+print('v1,' + base64.b64encode(digest).decode())
+")
+CODE=$(curl -s -o /tmp/smoke_deliv.json -w "%{http_code}" -m "$TIMEOUT" \
+  -X POST "$BASE_URL/webhook/email" \
+  -H "Content-Type: application/json" \
+  -H "svix-id: $MSG_ID" \
+  -H "svix-timestamp: $TS" \
+  -H "svix-signature: $SIG" \
+  --data "$PAYLOAD")
+RESP=$(cat /tmp/smoke_deliv.json)
+echo "    Response: $RESP"
+[ "$CODE" = "200" ] || fail "Expected 200 for message.delivered, got $CODE" 4
+echo "$RESP" | grep -q '"status":"logged"' || fail "Webhook did not return status=logged: $RESP" 4
+echo "$RESP" | grep -q '"message_id"' && log "    PASS — message.delivered logged with message_id echoed" || log "    PASS — message.delivered logged (no message_id in response)"
+
 echo ""
 echo "  All smoke tests passed at $BASE_URL"
 exit 0

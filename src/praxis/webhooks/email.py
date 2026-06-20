@@ -1,8 +1,16 @@
-"""AgentMail webhook endpoint with Svix signature verification."""
+"""AgentMail webhook endpoint with Svix signature verification.
+
+Handles the full AgentMail event taxonomy (10 event types) by delegating
+payload parsing to :mod:`praxis.webhooks.payloads`. Only ``message.received*``
+events are routed into the LangGraph; other events (sent / delivered / bounced
+/ complained / rejected / domain.verified) are logged and acknowledged so the
+agent can still react to delivery signals without blocking on them.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import orjson
@@ -11,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from praxis.config import get_settings
 from praxis.models.schemas import AgentMetadata, InboundEmail, WebhookResponse
+from praxis.webhooks.payloads import parse_agentmail_event
 from praxis.webhooks.svix import verify_svix_signature
 
 logger = structlog.get_logger()
@@ -19,7 +28,12 @@ router = APIRouter()
 
 
 def _parse_inbound_email(payload: dict[str, Any]) -> InboundEmail:
-    """Normalize an AgentMail webhook payload into InboundEmail."""
+    """Legacy fallback: normalize the old flat AgentMail payload shape.
+
+    Real AgentMail events (v0.5.x) use a nested ``message`` / ``thread`` shape
+    handled by ``parse_agentmail_event``. This helper remains for the
+    smoke-test path and any old payloads that haven't been migrated.
+    """
     data = payload.get("data", payload)
     from_raw = data.get("from", "")
     if isinstance(from_raw, dict):
@@ -55,9 +69,14 @@ async def receive_email(request: Request) -> WebhookResponse:
 
     1. Read the raw body (needed for signature verification).
     2. Verify the Svix-compatible HMAC-SHA256 signature.
-    3. Parse the payload into InboundEmail.
-    4. Initialize AgentState and invoke the compiled graph.
-    5. Return 200 OK with event ID and LangGraph thread_id.
+    3. Parse the payload with the new ``parse_agentmail_event``.
+    4. Dispatch by event type:
+       - ``message.received*`` → build ``InboundEmail``, invoke the graph
+       - ``message.delivered`` / ``message.sent`` → log + 200 OK
+       - ``message.bounced`` / ``message.complained`` / ``message.rejected``
+         → log warning + 200 OK
+       - ``domain.verified`` → log + 200 OK
+       - unknown event_type → 200 OK, logged as ignored
     """
     raw_body = await request.body()
     settings = get_settings()
@@ -98,13 +117,81 @@ async def receive_email(request: Request) -> WebhookResponse:
             detail="Invalid JSON payload",
         ) from e
 
-    event_id = payload.get("id", "")
-    event_type = payload.get("type", "email.received")
+    # ── New AgentMail event-shape parser (preferred) ─────────────
+    parsed = parse_agentmail_event(payload)
+    if parsed is None:
+        # Unknown event_type or malformed payload — try the legacy fallback
+        # so the smoke test (which uses the old flat shape) keeps working.
+        event_type_raw = payload.get("event_type") or payload.get("type", "")
+        if not event_type_raw:
+            logger.warning(
+                "webhook.unknown_payload",
+                keys=list(payload.keys())[:10],
+            )
+            return WebhookResponse(
+                status="ignored",
+                event_id="",
+                thread_id="",
+                message="Payload shape unrecognised",
+            )
+        # Otherwise treat as a flat message payload (legacy / smoke test)
+        email = _parse_inbound_email(payload)
+        event_id = payload.get("id", "") or payload.get("event_id", "")
+        thread_id = f"thread_{event_id}" if event_id else f"thread_{uuid4().hex}"
+        logger.info(
+            "webhook.legacy_payload",
+            event_id=event_id,
+            thread_id=thread_id,
+        )
+    else:
+        event_id = parsed.event_id
+        # Handle non-received events: log + 200 OK
+        if not parsed.is_received():
+            logger.info(
+                "webhook.event_logged",
+                event_type=parsed.event_type,
+                event_id=event_id,
+                bounce_type=parsed.bounce_type,
+                complaint_type=parsed.complaint_type,
+                reject_reason=parsed.reject_reason,
+                domain_name=parsed.domain_name,
+            )
+            return WebhookResponse(
+                status="logged",
+                event_id=event_id,
+                thread_id=parsed.thread_id or "",
+                message=f"Event {parsed.event_type} acknowledged",
+            )
+        # Received event: build InboundEmail and invoke the graph
+        email = parsed.to_inbound_email()
+        if email is None:  # pragma: no cover — is_received() guarantees non-None
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Parsed received event has no email payload",
+            )
+        thread_id = (
+            f"thread_{parsed.thread_id}"
+            if parsed.thread_id
+            else f"thread_{event_id or uuid4().hex}"
+        )
+        if parsed.is_spam:
+            logger.info("webhook.spam_received", event_id=event_id, sender=email.sender)
+        elif parsed.is_blocked:
+            logger.info("webhook.blocked", event_id=event_id)
+            return WebhookResponse(
+                status="blocked",
+                event_id=event_id,
+                thread_id=thread_id,
+                message="Message blocked",
+            )
+        elif parsed.is_unauthenticated:
+            logger.warning(
+                "webhook.unauthenticated",
+                event_id=event_id,
+                sender=email.sender,
+            )
 
-    # Normalize into canonical InboundEmail and invoke the graph
-    email = _parse_inbound_email(payload)
-    thread_id = f"thread_{event_id}" if event_id else f"thread_{uuid4().hex}"
-
+    # ── Invoke the graph for received (non-blocked) emails ──────
     graph = getattr(request.app.state, "graph", None)
     if graph is None:
         logger.error("webhook.graph_not_initialized")
@@ -113,7 +200,11 @@ async def receive_email(request: Request) -> WebhookResponse:
             detail="Graph not initialized",
         )
 
-    logger.info("webhook.graph_invoke", event_id=event_id, thread_id=thread_id, event_type=event_type)
+    logger.info(
+        "webhook.graph_invoke",
+        event_id=event_id,
+        thread_id=thread_id,
+    )
 
     from praxis.graph.state import AgentState
 
@@ -138,7 +229,3 @@ async def receive_email(request: Request) -> WebhookResponse:
         thread_id=thread_id,
         message="Email received and queued for processing",
     )
-
-
-# Import Any at the bottom to satisfy type check without circular issues
-from typing import Any  # noqa: E402

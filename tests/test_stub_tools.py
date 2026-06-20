@@ -81,26 +81,23 @@ async def test_dummy_tool_echoes_input() -> None:
 # ── email_tools tests ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_send_email_tool_requires_args() -> None:
-    """send_email_tool requires all arguments."""
-    # This test verifies the tool schema is correct
-    # Actual sending would require mocking the AgentMail client
-    assert send_email_tool.name == "send_email_tool"
-    assert "to" in send_email_tool.args_schema.model_json_schema()["properties"]
-    assert "subject" in send_email_tool.args_schema.model_json_schema()["properties"]
-    assert "body" in send_email_tool.args_schema.model_json_schema()["properties"]
+def test_send_email_tool_requires_args() -> None:
+    """send_email_tool is an async StructuredTool with the right schema."""
+    assert send_email_tool.name == "send_email"
+    assert "coroutine" in dir(send_email_tool) or hasattr(send_email_tool, "coroutine")
+    props = send_email_tool.args_schema.model_json_schema()["properties"]
+    assert "to" in props
+    assert "subject" in props
+    assert "body" in props
 
 
-@pytest.mark.asyncio
-async def test_reply_email_tool_requires_args() -> None:
-    """reply_email_tool requires message_id and body."""
-    assert reply_email_tool.name == "reply_email_tool"
+def test_reply_email_tool_requires_args() -> None:
+    """reply_email_tool is an async StructuredTool with inbox_id, message_id, body."""
+    assert reply_email_tool.name == "reply_email"
     props = reply_email_tool.args_schema.model_json_schema()["properties"]
+    assert "inbox_id" in props
     assert "message_id" in props
     assert "body" in props
-    # reply_all is optional with default False
-    assert "reply_all" in props
 
 
 # ── ALL_TOOLS registry tests ─────────────────────────────────────
@@ -125,10 +122,10 @@ def test_all_tools_contains_dummy() -> None:
 
 
 def test_all_tools_contains_email_tools() -> None:
-    """ALL_TOOLS contains both email tools."""
+    """ALL_TOOLS contains both email tools (new async StructuredTool design)."""
     tool_names = [t.name for t in ALL_TOOLS]
-    assert "send_email_tool" in tool_names
-    assert "reply_email_tool" in tool_names
+    assert "send_email" in tool_names
+    assert "reply_email" in tool_names
 
 
 def test_all_tools_list() -> None:
@@ -138,6 +135,8 @@ def test_all_tools_list() -> None:
 
 
 def test_email_tools_list() -> None:
-    """EMAIL_TOOLS is a list of exactly 2 tools."""
+    """EMAIL_TOOLS now includes send + reply + search + list_threads (4 tools)."""
     assert isinstance(EMAIL_TOOLS, list)
-    assert len(EMAIL_TOOLS) == 2
+    assert len(EMAIL_TOOLS) == 4
+    names = {t.name for t in EMAIL_TOOLS}
+    assert names == {"send_email", "reply_email", "search_inbox", "list_threads"}
