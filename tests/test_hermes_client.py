@@ -244,3 +244,68 @@ class _FakeAwaitable:
             return self._value
 
         return _coro().__await__()
+
+
+# ── Phase 4 LOW-finding regression tests ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_sleep_does_not_create_aclose_client() -> None:
+    """HermesClient._sleep must not create or close a stray httpx.AsyncClient.
+
+    Regression test for the Phase 4 review finding
+    (``hermes_client_sleep_dead_code``): the original implementation
+    contained a misleading ``await httpx.AsyncClient().aclose()`` call
+    that allocated and immediately closed an unused client on every
+    retry tick. The fixed implementation just calls ``asyncio.sleep``.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    with patch("praxis.services.hermes_client.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+        with patch("httpx.AsyncClient") as mock_cls:
+            await HermesClient._sleep(0.01)
+            mock_cls.assert_not_called()
+            mock_sleep.assert_awaited_once_with(0.01)
+
+
+@pytest.mark.asyncio
+async def test_get_template_url_encodes_id() -> None:
+    """get_template must URL-encode template_id before interpolating into the path.
+
+    Regression test for the Phase 4 review finding
+    (``hermes_client_template_id_url_encoding``): special characters
+    in template_id must be percent-encoded so they cannot break the
+    URL or alter the request path.
+    """
+    client = _make_client(max_retries=0)
+    seen_path: list[str] = []
+
+    async def fake_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+        seen_path.append(path)
+        return httpx.Response(200, json={"template": "hello"})
+
+    client._request = fake_request  # type: ignore[assignment]
+    await client.get_template("foo/bar baz?x=1")
+    assert len(seen_path) == 1
+    # The path must be URL-encoded — no raw slashes, spaces, or '?'
+    assert "/" not in seen_path[0].split("/templates/", 1)[1]
+    assert " " not in seen_path[0]
+    assert "?" not in seen_path[0]
+    # Sanity: percent-encoded versions are present
+    assert "%2F" in seen_path[0]  # encoded /
+    assert "%20" in seen_path[0]  # encoded space
+    assert "%3F" in seen_path[0]  # encoded ?
+
+
+@pytest.mark.asyncio
+async def test_get_template_rejects_non_string_response() -> None:
+    """get_template must raise HermesAPIError if the server returns a non-string template."""
+    client = _make_client(max_retries=0)
+
+    async def fake_request(method: str, path: str, **kwargs: Any) -> httpx.Response:
+        return httpx.Response(200, json={"template": {"nested": "object"}})
+
+    client._request = fake_request  # type: ignore[assignment]
+    with pytest.raises(HermesAPIError, match="non-string template"):
+        await client.get_template("any_id")
+

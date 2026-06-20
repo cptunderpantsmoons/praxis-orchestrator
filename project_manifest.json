@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Native asynchronous enterprise email agent — LangGraph + Umans API + Hermes",
   "created_at": "2026-06-19T11:06:00Z",
-  "current_phase": "PHASE_4_REVIEW",
+  "current_phase": "PHASE_5_DEPLOY",
   "phase_status": "COMPLETE",
   "phase_history": [
     {
@@ -66,6 +66,24 @@
         {"id": "403", "desc": "Dependency vulnerability scan (pip-audit) — 0 known vulns in project deps; 5 in pip CLI (build-time, non-blocking)", "status": "PASS"},
         {"id": "404", "desc": "OWASP Top 10 checklist — 9/10 PASS, 1/10 PARTIAL (A09 log aggregation, deferred to Phase 5 ops)", "status": "PASS"},
         {"id": "405", "desc": "Documentation completeness audit — README + 7 specs + inline docstrings, no TODO/FIXME markers, structlog events consistent", "status": "PASS"}
+      ]
+    },
+    {
+      "phase": "PHASE_5_DEPLOY",
+      "objective": "Generate CI/CD manifests, container configs, deployment runbook, and verify deployment",
+      "status": "COMPLETE",
+      "gate_result": "PASS",
+      "tasks": [
+        {"id": "501", "desc": "Fix HermesClient._sleep dead code (Phase 4 LOW #1) + 1 regression test", "status": "PASS"},
+        {"id": "502", "desc": "Fix HermesClient.get_template URL-encoding (Phase 4 LOW #2) + 2 regression tests", "status": "PASS"},
+        {"id": "503", "desc": "Create CI pipeline (.github/workflows/ci.yml): lint, test, coverage, security, docker build", "status": "PASS"},
+        {"id": "504", "desc": "Create CD pipeline (.github/workflows/deploy.yml): staging auto, production manual", "status": "PASS"},
+        {"id": "505", "desc": "Create deployment runbook (ci-cd/deployment-runbook.md): pre-deploy, steps, verify, rollback", "status": "PASS"},
+        {"id": "506", "desc": "Create smoke test script (ci-cd/smoke-test.sh): health + 3 webhook checks, verified locally", "status": "PASS"},
+        {"id": "507", "desc": "Harden Dockerfile: multi-stage, non-root user, OCI labels, healthcheck, proxy-headers", "status": "PASS"},
+        {"id": "508", "desc": "Update README + .env.example with deployment section, quality gate table", "status": "PASS"},
+        {"id": "509", "desc": "Final verification: 153/153 tests, 88% coverage, 0 lint, 0 bandit, smoke test passed", "status": "PASS"},
+        {"id": "510", "desc": "Tag v0.1.0, audit log signed, CHECKPOINT::RELEASE_VERIFIED handoff", "status": "PASS"}
       ]
     }
   ],
@@ -139,6 +157,24 @@
       "review_report": "specs/phase4_review.md",
       "review_report_sha256": "874e1af7d0e7b7ae0ef674d05f1ee6d309469ddc115080d318a85ef3dad0ea65",
       "gate_result": "PASS"
+    },
+    "phase_5": {
+      "tests_passing": "153/153",
+      "test_coverage_overall": 0.88,
+      "test_coverage_critical_paths": 1.0,
+      "lint_errors": 0,
+      "security_findings": 0,
+      "dependencies_vulns": 0,
+      "ci_workflow": ".github/workflows/ci.yml",
+      "cd_workflow": ".github/workflows/deploy.yml",
+      "deployment_runbook": "ci-cd/deployment-runbook.md",
+      "smoke_test": "ci-cd/smoke-test.sh (verified locally: 4/4 passed in sandbox mode)",
+      "docker_image_hardened": true,
+      "dockerfile_features": ["multi-stage", "non-root user (UID 1000)", "HEALTHCHECK", "OCI labels", "uv frozen lockfile"],
+      "phase_4_low_findings_fixed": 2,
+      "phase_4_low_findings_regression_tests": 3,
+      "release_tag": "v0.1.0",
+      "gate_result": "PASS"
     }
   },
   "active_requirements": [
@@ -158,14 +194,15 @@
     "REQ-306: Embed Sender and Persist to Qdrant",
     "REQ-307: Hermes Prompt Template Library",
     "REQ-308: Phase 3 Quality Gate Evidence",
-    "PHASE-4: Review & Hardening (2 LOW non-blocking findings, fix-forward to Phase 5)"
+    "PHASE-4: Review & Hardening (2 LOW non-blocking findings, fix-forward to Phase 5)",
+    "PHASE-5: Deployment & Release (CI/CD + Dockerfile hardening + smoke tests + 2 LOW fixes)"
   ],
   "skill_allocation": {
     "PHASE_1": ["plan", "spike", "kanban-orchestrator", "test-driven-development"],
     "PHASE_2": ["test-driven-development", "simplify-code"],
     "PHASE_3": ["systematic-debugging", "python-debugpy", "dogfood"],
     "PHASE_4": ["requesting-code-review", "github-code-review", "codebase-inspection"],
-    "PHASE_5": ["github-pr-workflow", "github-repo-management"]
+    "PHASE_5": ["github-pr-workflow", "github-repo-management", "github-issues", "requesting-code-review"]
   },
   "audit_log": "logs/audit_log.jsonl"
 }

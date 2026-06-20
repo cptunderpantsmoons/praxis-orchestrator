@@ -60,10 +60,22 @@ class HermesClient:
         return self._parse_response(resp)
 
     async def get_template(self, template_id: str) -> str:
-        """Retrieve a template string by ID."""
+        """Retrieve a template string by ID.
+
+        The template_id is URL-encoded before being interpolated into the
+        path, so callers may pass any string without breaking the request.
+        """
+        from urllib.parse import quote
         logger.info("hermes.get_template", template_id=template_id)
-        resp = await self._request("GET", f"/prompts/templates/{template_id}")
-        return resp.json().get("template", "")
+        encoded = quote(template_id, safe="")
+        resp = await self._request("GET", f"/prompts/templates/{encoded}")
+        data = resp.json()
+        template = data.get("template", "")
+        if not isinstance(template, str):
+            raise HermesAPIError(
+                f"Hermes returned non-string template: {type(template).__name__}"
+            )
+        return template
 
     async def stream_prompt(
         self, template_id: str, context: dict
@@ -156,8 +168,7 @@ class HermesClient:
 
     @staticmethod
     async def _sleep(delay: float) -> None:
-        """Non-blocking sleep."""
-        await httpx.AsyncClient().aclose()  # placeholder — actual sleep handled by event loop
+        """Non-blocking sleep (exponential backoff between retry attempts)."""
         await asyncio.sleep(delay)
 
 
