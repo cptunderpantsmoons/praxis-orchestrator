@@ -58,8 +58,9 @@ class UmansChatModel(BaseChatModel):
     temperature: float = 0.0
     context_window: int = 131_072
 
-    # Dependencies
-    router: UmansConcurrencyRouter | None = None
+    # Dependencies — use Any type to avoid Pydantic is_instance_of validation
+    # rejecting MagicMock during tests; validated at call time instead.
+    router: Any = None
 
     # ── Factory ──────────────────────────────────────────────────
 

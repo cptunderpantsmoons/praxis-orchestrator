@@ -11,6 +11,8 @@ from fastapi import FastAPI
 
 from praxis import __version__
 from praxis.config import get_settings
+from praxis.graph import build_graph
+from praxis.graph.checkpointer import InMemoryFallback, get_checkpointer
 from praxis.router import UmansConcurrencyRouter
 from praxis.webhooks.email import router as webhook_router
 
@@ -19,10 +21,23 @@ logger = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan: create and tear down the concurrency router."""
+    """Application lifespan: create and tear down shared resources."""
     settings = get_settings()
+
+    # Shared concurrency router for all Umans inference
     umans_router = UmansConcurrencyRouter(settings=settings)
     app.state.umans_router = umans_router
+
+    # LangGraph checkpointer: prefer Postgres, fall back to memory for tests
+    try:
+        checkpointer = await get_checkpointer(settings=settings)
+    except Exception as exc:  # pragma: no cover - environment-specific fallback
+        logger.warning("checkpointer.postgres_failed", error=str(exc))
+        checkpointer = InMemoryFallback()
+
+    app.state.checkpointer = checkpointer
+    app.state.graph = build_graph(checkpointer=checkpointer)
+
     logger.info(
         "app.startup",
         version=__version__,

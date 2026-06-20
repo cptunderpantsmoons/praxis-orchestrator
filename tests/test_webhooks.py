@@ -79,8 +79,26 @@ class TestSvixVerification:
 class TestWebhookEndpoint:
     """Integration tests for the /webhook/email endpoint."""
 
-    def test_valid_payload_accepted(self, client: TestClient, svix_signer):
+    def test_valid_payload_accepted(self, client: TestClient, svix_signer, monkeypatch):
         """A properly signed webhook returns 200 OK with the event ID."""
+        # Mock the model to avoid real HTTP calls
+        from unittest.mock import MagicMock
+
+        from praxis.models.schemas import EmailTriage, Intent, Priority, Sentiment
+
+        mock_model = MagicMock()
+        mock_model.ainvoke = MagicMock(
+            return_value=MagicMock(content=EmailTriage(
+                priority=Priority.NORMAL,
+                intent=Intent.GENERAL_INQUIRY,
+                sentiment=Sentiment.NEUTRAL,
+                is_spam=False,
+                sender_vip=False,
+                confidence=0.5,
+            ).model_dump_json())
+        )
+        monkeypatch.setattr("praxis.graph.nodes.UmansChatModel.create", lambda *a, **k: mock_model)
+
         payload = {
             "id": "evt_abc123",
             "type": "email.received",

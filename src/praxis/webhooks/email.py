@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from uuid import uuid4
+
 import orjson
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 
 from praxis.config import get_settings
+from praxis.models.schemas import AgentMetadata, InboundEmail, WebhookResponse
 from praxis.webhooks.svix import verify_svix_signature
 
 logger = structlog.get_logger()
@@ -14,17 +18,46 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 
+def _parse_inbound_email(payload: dict[str, Any]) -> InboundEmail:
+    """Normalize an AgentMail webhook payload into InboundEmail."""
+    data = payload.get("data", payload)
+    from_raw = data.get("from", "")
+    if isinstance(from_raw, dict):
+        sender = from_raw.get("email", "")
+    else:
+        sender = str(from_raw)
+
+    recipients_raw = data.get("to", [])
+    recipients: list[str] = []
+    if isinstance(recipients_raw, list):
+        for item in recipients_raw:
+            if isinstance(item, dict):
+                recipients.append(item.get("email", ""))
+            else:
+                recipients.append(str(item))
+    elif isinstance(recipients_raw, dict):
+        recipients.append(recipients_raw.get("email", ""))
+
+    return InboundEmail(
+        message_id=data.get("id") or payload.get("id", ""),
+        sender=sender,
+        recipients=recipients,
+        subject=data.get("subject", ""),
+        body=data.get("body", ""),
+        html_body=data.get("html_body"),
+        received_at=datetime.now(UTC),
+    )
+
+
 @router.post("/email", status_code=status.HTTP_200_OK)
-async def receive_email(request: Request) -> dict:
-    """Receive and verify an AgentMail webhook.
+async def receive_email(request: Request) -> WebhookResponse:
+    """Receive and verify an AgentMail webhook, then invoke the LangGraph.
 
     1. Read the raw body (needed for signature verification).
     2. Verify the Svix-compatible HMAC-SHA256 signature.
-    3. Parse the payload and extract the event ID.
-    4. Return 200 OK with the event ID.
-
-    In Phase 2, this handler will initialize the LangGraph state
-    and invoke the compiled graph.
+    3. Parse the payload into InboundEmail.
+    4. Initialize AgentState and invoke the compiled graph.
+    5. Return 200 OK with event ID and LangGraph thread_id.
     """
     raw_body = await request.body()
     settings = get_settings()
@@ -68,10 +101,44 @@ async def receive_email(request: Request) -> dict:
     event_id = payload.get("id", "")
     event_type = payload.get("type", "email.received")
 
-    logger.info("webhook.received", event_id=event_id, event_type=event_type)
+    # Normalize into canonical InboundEmail and invoke the graph
+    email = _parse_inbound_email(payload)
+    thread_id = f"thread_{event_id}" if event_id else f"thread_{uuid4().hex}"
 
-    return {
-        "status": "accepted",
-        "event_id": event_id,
-        "message": "Email received and verified",
+    graph = getattr(request.app.state, "graph", None)
+    if graph is None:
+        logger.error("webhook.graph_not_initialized")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Graph not initialized",
+        )
+
+    logger.info("webhook.graph_invoke", event_id=event_id, thread_id=thread_id, event_type=event_type)
+
+    from praxis.graph.state import AgentState
+
+    initial_state: AgentState = {
+        "email_content": email,
+        "metadata": AgentMetadata(thread_id=thread_id, workflow_id=event_id),
     }
+
+    await graph.ainvoke(
+        initial_state,
+        config={
+            "configurable": {
+                "thread_id": thread_id,
+                "router": request.app.state.umans_router,
+            },
+        },
+    )
+
+    return WebhookResponse(
+        status="accepted",
+        event_id=event_id,
+        thread_id=thread_id,
+        message="Email received and queued for processing",
+    )
+
+
+# Import Any at the bottom to satisfy type check without circular issues
+from typing import Any  # noqa: E402

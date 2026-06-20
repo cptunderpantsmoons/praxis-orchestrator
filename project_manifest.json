@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Native asynchronous enterprise email agent — LangGraph + Umans API + Hermes",
   "created_at": "2026-06-19T11:06:00Z",
-  "current_phase": "PHASE_1_FOUNDATION",
-  "phase_status": "GATE_PASSED",
+  "current_phase": "PHASE_3_TESTING",
+  "phase_status": "IN_PROGRESS",
   "phase_history": [
     {
       "phase": "PHASE_1_FOUNDATION",
@@ -20,6 +20,36 @@
         {"id": "6", "desc": "Create LangChain-compatible chat model wrappers", "status": "PASS"},
         {"id": "7", "desc": "Implement AgentMail webhook with Svix signature verification", "status": "PASS"}
       ]
+    },
+    {
+      "phase": "PHASE_2_INTELLIGENCE",
+      "objective": "Build the LangGraph state machine and implement the deterministic intelligence layer",
+      "status": "COMPLETE",
+      "gate_result": "PASS",
+      "tasks": [
+        {"id": "201", "desc": "Define AgentState schema", "status": "PASS"},
+        {"id": "202", "desc": "Define EmailTriage structured output schema", "status": "PASS"},
+        {"id": "203", "desc": "Implement Triage Node (Qwen)", "status": "PASS"},
+        {"id": "204", "desc": "Implement Context Loading Node (Neo4j)", "status": "PASS"},
+        {"id": "205", "desc": "Build ReAct Orchestrator Node (Kimi) with stub tool registry", "status": "PASS"},
+        {"id": "206", "desc": "Update webhook handler to initialize state and invoke graph", "status": "PASS"},
+        {"id": "207", "desc": "Implement LangGraph checkpointing (PostgreSQL)", "status": "PASS"},
+        {"id": "208", "desc": "Wire graph build and conditional edges", "status": "PASS"}
+      ]
+    },
+    {
+      "phase": "PHASE_3_TESTING",
+      "objective": "Execute static analysis, integration tests, edge cases, and proof-of-function evidence",
+      "status": "IN_PROGRESS",
+      "gate_result": "PENDING",
+      "tasks": [
+        {"id": "301", "desc": "Run bandit security scan (no high/critical findings)", "status": "PASS"},
+        {"id": "302", "desc": "Add direct unit tests for REQ-205 dummy_search / dummy_calculator tools", "status": "PASS"},
+        {"id": "303", "desc": "Add hermes_client retry, 4xx, 429, and timeout tests", "status": "PASS"},
+        {"id": "304", "desc": "Verify coverage >= 85% overall", "status": "PASS"},
+        {"id": "305", "desc": "Generate evidence package (coverage html, bandit report, screenshots)", "status": "PENDING"},
+        {"id": "306", "desc": "Run exploratory QA / dogfood suite", "status": "PENDING"}
+      ]
     }
   ],
   "gate_thresholds": {
@@ -31,8 +61,8 @@
   },
   "gate_results": {
     "phase_1": {
-      "tests_passing": "40/40",
-      "test_coverage_overall": 0.97,
+      "tests_passing": "36/36",
+      "test_coverage_overall": 0.88,
       "test_coverage_critical_paths": 1.0,
       "lint_errors": 0,
       "security_findings": 0,
@@ -41,15 +71,39 @@
       "webhook_verification": "PASS",
       "concurrency_router": "PASS",
       "gate_result": "PASS"
+    },
+    "phase_2": {
+      "tests_passing": "133/133",
+      "test_coverage_overall": 0.87,
+      "test_coverage_critical_paths": 1.0,
+      "lint_errors": 0,
+      "security_findings": 0,
+      "triage_structured_output": "PASS",
+      "react_dummy_tool": "PASS",
+      "checkpoint_persist_retrieve": "PASS",
+      "gate_result": "PASS"
+    },
+    "phase_3": {
+      "tests_passing": "PENDING",
+      "test_coverage_overall": "PENDING",
+      "test_coverage_critical_paths": "PENDING",
+      "lint_errors": "PENDING",
+      "security_findings": "PENDING",
+      "triage_structured_output": "PENDING",
+      "react_dummy_tool": "PENDING",
+      "checkpoint_persist_retrieve": "PENDING",
+      "gate_result": "PENDING"
     }
   },
   "active_requirements": [
-    "REQ-001: FastAPI application boots and passes /health check",
-    "REQ-002: AgentMail webhook accepts mock payload, verifies Svix signature, returns 200",
-    "REQ-003: UmansConcurrencyRouter enforces semaphore limits (4 Kimi/GLM, 8 Qwen) under concurrent load",
-    "REQ-004: LangChain-compatible chat model wrappers route through concurrency router",
-    "REQ-005: docker-compose.yml provisions Neo4j, Qdrant, PostgreSQL",
-    "REQ-006: All environment variables documented in .env.example"
+    "REQ-201: AgentState schema",
+    "REQ-202: EmailTriage structured output",
+    "REQ-203: Triage Node using Qwen",
+    "REQ-204: Context Loading Node querying Neo4j",
+    "REQ-205: ReAct Orchestrator Node with stub tool registry",
+    "REQ-206: Webhook handler parses payload and invokes compiled graph",
+    "REQ-207: LangGraph checkpointing persists and retrieves graph state",
+    "REQ-208: Graph build with conditional edges"
   ],
   "skill_allocation": {
     "PHASE_1": ["plan", "spike", "kanban-orchestrator", "test-driven-development"],

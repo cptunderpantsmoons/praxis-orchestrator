@@ -51,7 +51,13 @@ class Settings(BaseSettings):
     qdrant_api_key: str = "praxis_dev_api_key"
 
     # ── PostgreSQL (LangGraph Checkpointing) ──────────────────────
-    postgres_dsn: str = "postgresql://praxis:praxis_dev_password@127.0.0.1:5432/praxis"
+    postgres_dsn: str = "postgresql://praxis:***@127.0.0.1:5432/praxis"
+
+    # ── Hermes (Phase 3 agent platform) ───────────────────────────
+    hermes_base_url: str = "http://127.0.0.1:8787"
+    hermes_api_key: str = "hermes-dev-key"
+    hermes_timeout: float = 30.0
+    hermes_max_retries: int = 3
 
 
 @lru_cache
