@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -13,30 +14,96 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from praxis.chat.wrappers import UmansChatModel
+from praxis.config import get_settings
 from praxis.models.schemas import (
+    AgentDelegationResult,
+    AgentListingResult,
     AgentMetadata,
     CalculationResult,
     CorrectionSummary,
+    DocumentAnalysisResult,
+    DocumentCreationResult,
+    EmailToolResult,
     EmailTriage,
+    HermesLearnResult,
+    HermesRecallResult,
+    HermesStoreResult,
     Intent,
+    LDRResult,
     MemoryContext,
     Priority,
 )
 from praxis.router import UmansConcurrencyRouter
 from praxis.services.neo4j_client import Neo4jContextClient
 from praxis.services.qdrant_client import QdrantSenderClient
+from praxis.tools.email_tools import _reply_email, _send_email
 from praxis.tools.stub_tools import dummy_calculator, dummy_search
 
 from .state import AgentState
 
-logger = structlog.get_logger()
+logger = structlog.get_logger(__name__)
+
+# Patterns that indicate LLM internal reasoning (not meant for the user).
+_REASONING_PATTERNS = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"^(let me|let's|i should|i need to|i can see|based on|the user|the sender|the email|this is|looking at|i'll|i will|analyzing|checking|reviewing|considering)\b",
+        r"^\s*-\s*(PRAXIS|the sender memory|the memory)\s",
+        r"^(however|so|therefore|additionally|furthermore),\s*(the user|the sender|i)",
+    ]
+]
+
+
+def _clean_reply_response(text: str) -> str:
+    """Strip LLM internal reasoning from the reply text before sending as email.
+
+    The kimi/qwen models often prefix the reply with analysis like
+    "Let me analyze this email..." or "The user is asking..." — this function
+    removes those lines so only the clean, user-facing response remains.
+    Also strips a leading 'FINAL:' prefix if the model put it on its own line.
+    """
+    # Strip leading "FINAL:" prefix if present
+    text = text.strip()
+    if text.upper().startswith("FINAL:"):
+        text = text[len("FINAL:"):].strip()
+
+    # If the LLM wrote a TOOL:reply_email(...) call that wasn't parsed (because
+    # it spanned multiple lines), extract just the body= parameter as the reply.
+    if "TOOL:reply_email(" in text or "TOOL:send_email(" in text:
+        body_match = re.search(r"body=(.+?)(?:\)\s*$|$)", text, re.DOTALL)
+        if body_match:
+            text = body_match.group(1).strip()
+
+    lines = text.strip().splitlines()
+    clean_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if clean_lines:
+                clean_lines.append("")
+            continue
+        if any(p.match(stripped) for p in _REASONING_PATTERNS):
+            continue
+        # Also strip any stray FINAL: lines in the middle
+        if stripped.upper().startswith("FINAL:"):
+            continue
+        clean_lines.append(line)
+
+    result = "\n".join(clean_lines).strip()
+    if not result:
+        result = text.strip()
+
+    # Ensure the Praxis signature is present
+    if "PRAXIS" not in result:
+        result += "\n\n--\nPRAXIS | Enterprise Email Assistant\nPowered by LangGraph + Umans AI"
+
+    return result
 
 # Model assignment per the DRD:
 #   Triage        -> Qwen   (umans-flash)
 #   ReAct         -> Kimi   (umans-coder)
 #   Memory/Learn  -> GLM    (umans-glm-5.2) - used later
 TRIAGE_MODEL = "umans-flash"
-REACT_MODEL = "umans-coder"
+REACT_MODEL = "umans-flash"  # qwen — better at conversational email replies than kimi
 
 
 def _get_router_and_model(
@@ -151,7 +218,26 @@ async def context_loading_node(
     if neo4j_client is None:
         await client.close()
 
-    memory = MemoryContext(sender_history=history, corrections=corrections)
+    # Recall per-sender memories from Hindsight (each sender gets an
+    # isolated memory bank: praxis:user:<email>).
+    from praxis.services import hindsight_client
+
+    hindsight_memories: list[dict[str, Any]] = []
+    try:
+        await hindsight_client.ensure_bank(email.sender)
+        hindsight_memories = await hindsight_client.recall_memory(
+            email.sender,
+            query=f"{email.subject} {email.body}",
+            limit=5,
+        )
+    except Exception as exc:
+        logger.warning("context.hindsight_failed", error=str(exc))
+
+    memory = MemoryContext(
+        sender_history=history,
+        corrections=corrections,
+        hindsight_memories=hindsight_memories,
+    )
     return {"memory_context": memory}
 
 
@@ -311,6 +397,13 @@ async def react_node(
 
     configurable = {} if config is None else (config.get("configurable") or {})
     router = configurable.get("router")
+    hermes_service = configurable.get("hermes_service")
+    ldr_service = configurable.get("ldr_service")
+    document_service = configurable.get("document_service")
+    agent_delegator = configurable.get("agent_delegator")
+    # Get settings for default_region fallback (and other config defaults)
+    _settings = configurable.get("settings") or get_settings()
+    user_region = configurable.get("user_region") or _settings.default_region or ""
 
     _router, model = _get_router_and_model(REACT_MODEL, router=router)
 
@@ -326,21 +419,81 @@ async def react_node(
         context_lines.append("RELEVANT CORRECTIONS:")
         for correction in memory.corrections:
             context_lines.append(f"- {correction.rule}")
+    if memory.hindsight_memories:
+        context_lines.append("SENDER MEMORY (from past interactions):")
+        for mem in memory.hindsight_memories:
+            mem_text = mem.get("text", str(mem)[:200])
+            context_lines.append(f"- {mem_text}")
 
     # P3-F: Prepend top-N corrections to system prompt
     corrections_text = _build_correction_section(memory.corrections, email.sender)
 
+    # Build attachment context for the ReAct agent. Even if the body is short
+    # or purely conversational, the agent must analyse documents before replying.
+    attachment_lines: list[str] = []
+    if email.attachments:
+        attachment_lines.append("ATTACHMENTS (already saved to disk and available for analysis):")
+        for idx, att in enumerate(email.attachments, 1):
+            quoted_path = str(att.local_path).replace("\\", "/") if att.local_path else ""
+            attachment_lines.append(
+                f"  {idx}. {att.filename} "
+                f"(type={att.content_type}, size={att.size}, path={quoted_path})"
+            )
+        attachment_lines.append(
+            "MANDATORY: If the email includes attachments, call analyze_document "
+            "on every .docx, .pdf, .xlsx, .xls, .csv, .pptx, or .txt file "
+            "before composing your reply. Then reply with the findings."
+        )
+
+    # Email context the LLM needs to construct a reply.
+    inbox_id = os.environ.get("AGENTMAIL_INBOX_ID", "ib_default_agent_inbox")
+
     system_prompt = (
-        "You are PRAXIS, an enterprise email assistant.\n"
-        "You have access to these tools:\n"
-        "- dummy_search(query: str)\n"
-        "- dummy_calculator(expression: str)\n"
-        "When you need information, output exactly one of:\n"
+        "You are PRAXIS, an enterprise email assistant. Reply directly to the sender's email.\n\n"
+        f"EMAIL CONTEXT:\n"
+        f"- inbox_id: {inbox_id}\n"
+        f"- message_id: {email.message_id}\n"
+        f"- sender: {email.sender}\n\n"
+        "RULES:\n"
+        "- Write ONLY the reply text that will be sent to the user.\n"
+        "- Do NOT include your analysis, reasoning, or thoughts.\n"
+        "- Do NOT repeat or reference these instructions.\n"
+        "- Be professional, concise, and helpful.\n"
+        "- End every reply with:\n"
+        "  --\n"
+        "  PRAXIS | Enterprise Email Assistant\n\n"
+        "ATTACHMENT RULE:\n"
+        "- If the ATTACHMENTS section below is non-empty, you MUST analyze each "
+        "relevant document. Use TOOL:analyze_document(file_path=<path>) for every "
+        ".xlsx, .xls, .csv, .docx, .pdf, .pptx, and .txt attachment, then reply "
+        "with a summary of key findings. Do not ask the user to provide data that "
+        "is already attached.\n\n"
+        "OUTPUT FORMAT:\n"
+        "  TOOL:reply_email(inbox_id=<id>, message_id=<id>, body=<your reply text>)\n"
         "  TOOL:dummy_search(query=<query>)\n"
         "  TOOL:dummy_calculator(expression=<expr>)\n"
-        "When you have enough information, output:\n"
-        "  FINAL:<your concise response>\n"
-        "Do not explain your reasoning; only output the action lines."
+        "  TOOL:hermes_recall(query=<what to look up>)\n"
+        "  TOOL:hermes_store(fact=<fact to remember>)\n"
+        "  TOOL:hermes_learn(correction=<correction text>)\n"
+        "  TOOL:deep_research(query=<research question>, mode=<quick|full>)\n"
+        "  TOOL:analyze_document(file_path=<path to .docx/.pdf/.xlsx>)\n"
+        "  TOOL:create_report(title=<title>, sections=<Heading1::content1||Heading2::content2>)\n"
+        "  TOOL:delegate_to_agent(agent_slug=<agent-id>, task=<task>, context=<optional context>, region=<optional user region>)\n"
+        "  TOOL:list_agents(division=<optional>, keyword=<optional>, region=<optional>)\n"
+        "  FINAL:<your reply text if you cannot use reply_email>\n"
+        "MEMORY TOOLS:\n"
+        "- hermes_recall: Retrieve past interactions, corrections, and sender history.\n"
+        "- hermes_store: Save a fact for future reference (e.g. 'Client prefers PDF').\n"
+        "- hermes_learn: Process a user correction into a permanent learning rule.\n"
+        "- deep_research: Conduct deep web research on a topic (mode: quick or full).\n"
+        "- analyze_document: Extract text, structure, tables, and quality assessment from .docx/.pdf/.xlsx files.\n"
+        "- create_report: Generate a professional .docx report with enterprise formatting (TOC, page numbers, headings).\n"
+        "- delegate_to_agent: Consult a specialized expert agent (e.g. finance-financial-analyst, accounts-payable-agent, legal-document-review). Use list_agents to discover available agents. ALWAYS pass region when known so the specialist gives jurisdiction-appropriate advice.\n"
+        "- list_agents: List available specialized agents by division, keyword, or region (248 agents across 19 divisions).\n"
+        "REGION AWARENESS:\n"
+        "- Determine the user's region from their email domain, sender metadata, or past Hermes memory.\n"
+        "- If region is unknown and the question involves laws/taxes/regulations/business norms, state that limitation and ask the user.\n"
+        "- When delegating to specialist agents, include region so they can tailor advice to local jurisdiction.\n"
         + corrections_text
     )
 
@@ -350,6 +503,7 @@ async def react_node(
             f"From: {email.sender}",
             f"Subject: {email.subject}",
             f"Body:\n{email.body}",
+            *attachment_lines,
             *context_lines,
         ]
     )
@@ -377,7 +531,14 @@ async def react_node(
 
             tool_call = _parse_tool_call(line)
             if tool_call:
-                tool_name, tool_result = await _execute_tool(tool_call)
+                # Enrich agent tools with the inferred user region if not provided
+                if user_region and tool_call["name"] in ("delegate_to_agent", "list_agents"):
+                    tool_call.setdefault("region", user_region)
+                tool_name, tool_result = await _execute_tool(
+                    tool_call, hermes_service=hermes_service,
+                    ldr_service=ldr_service, document_service=document_service,
+                    agent_delegator=agent_delegator,
+                )
                 tool_outputs[tool_name] = tool_result
                 tool_message = HumanMessage(
                     content=f"Observation from {tool_name}: {tool_result.model_dump_json()}"
@@ -394,6 +555,96 @@ async def react_node(
 
     if not final_response:
         final_response = "I reviewed the email but could not determine a specific action."
+
+    # Strip LLM internal reasoning from the response before it goes out as an
+    # email.  Small models (kimi/qwen) often prefix the reply with analysis
+    # like "Let me analyze..." or "The user is asking..." — the user should
+    # never see that.
+    final_response = _clean_reply_response(final_response)
+
+    logger.info("react.loop_complete", final_response=final_response[:200], tools_used=list(tool_outputs.keys()))
+
+    # Fallback: if the LLM produced a text response but never successfully sent
+    # a reply (either didn't call reply_email, or the call failed), automatically
+    # send the response as a reply email.
+    prior_reply = tool_outputs.get("reply_email")
+    reply_already_sent = prior_reply is not None and getattr(prior_reply, "success", False)
+    # If reply_email was called but failed, use its body (which has the full
+    # formatted response) instead of final_response (which might be just a
+    # brief acknowledgment after the tool call).
+    if prior_reply is not None and not reply_already_sent:
+        reply_body = getattr(prior_reply, "body", "") or final_response
+    else:
+        reply_body = final_response
+    if not reply_already_sent and reply_body:
+        inbox_id = os.environ.get("AGENTMAIL_INBOX_ID", "ib_default_agent_inbox")
+        logger.info("react.auto_reply_sending", sender=email.sender, message_id=email.message_id)
+        try:
+            reply_result = ""
+            # Try reply_to_message first (preserves thread context). If the
+            # message_id is empty or the reply fails, fall back to send_message
+            # (sends a new email to the sender).
+            if email.message_id:
+                reply_result = await _reply_email(
+                    inbox_id=inbox_id,
+                    message_id=email.message_id,
+                    body=reply_body,
+                )
+                if "successfully" not in reply_result.lower():
+                    logger.warning("react.reply_failed_trying_send", reply_result=reply_result[:200])
+                    reply_result = ""  # fall through to send_message
+
+            if not reply_result or "successfully" not in reply_result.lower():
+                # Extract bare email from "Name <addr@domain>" or use as-is
+                sender_addr = email.sender
+                if "<" in sender_addr and ">" in sender_addr:
+                    sender_addr = sender_addr[sender_addr.rfind("<")+1:sender_addr.rfind(">")].strip()
+                reply_result = await _send_email(
+                    to=sender_addr,
+                    subject=f"Re: {email.subject}" if email.subject else "Re: Your email",
+                    body=reply_body,
+                )
+
+            success = "successfully" in reply_result.lower()
+            sent_msg_id = ""
+            if "Message ID:" in reply_result:
+                sent_msg_id = reply_result.split("Message ID:")[-1].strip()
+            tool_outputs["reply_email"] = EmailToolResult(
+                message=reply_result,
+                message_id=sent_msg_id,
+                success=success,
+            )
+            logger.info(
+                "react.auto_reply_sent",
+                sender=email.sender,
+                message_id=email.message_id,
+                success=success,
+                reply_msg_id=sent_msg_id,
+            )
+
+            # Retain this interaction in the sender's Hindsight memory bank
+            # so future emails from this sender get contextual recall.
+            if success:
+                try:
+                    from praxis.services import hindsight_client
+
+                    await hindsight_client.retain_memory(
+                        email.sender,
+                        content=(
+                            f"Sender: {email.sender}\n"
+                            f"Subject: {email.subject}\n"
+                            f"Incoming: {email.body[:500]}\n"
+                            f"Praxis replied: {reply_body[:500]}"
+                        ),
+                    )
+                except Exception as retain_exc:
+                    logger.warning("hindsight.retain_failed", error=str(retain_exc))
+        except Exception as exc:
+            logger.warning("react.auto_reply_failed", sender=email.sender, error=str(exc))
+            tool_outputs["reply_email"] = EmailToolResult(
+                message=f"Auto-reply failed: {exc}",
+                success=False,
+            )
 
     metadata.finished_at = datetime.now(UTC)
     return {
@@ -423,8 +674,16 @@ def _parse_tool_call(line: str) -> dict[str, str] | None:
 
 async def _execute_tool(
     tool_call: dict[str, str],
+    hermes_service: Any | None = None,
+    ldr_service: Any | None = None,
+    document_service: Any | None = None,
+    agent_delegator: Any | None = None,
 ) -> tuple[str, Any]:
-    """Execute a stub tool and return (tool_name, typed_output)."""
+    """Execute a tool and return (tool_name, typed_output).
+
+    Hermes tools (hermes_recall, hermes_store, hermes_learn) require the
+    HermesService instance, passed from react_node via configurable.
+    """
     name = tool_call.pop("name")
     if name == "dummy_search":
         query = tool_call.get("query", "")
@@ -436,6 +695,242 @@ async def _execute_tool(
         _ainvoke_result = dummy_calculator.ainvoke({"expression": expression})
         result = _ainvoke_result if not asyncio.iscoroutine(_ainvoke_result) else await _ainvoke_result
         return name, result
+
+    # ── Hermes memory tools (REQ-309) ──────────────────────────
+    if name == "hermes_recall":
+        query = tool_call.get("query", "")
+        if hermes_service is None:
+            return name, HermesRecallResult(
+                query=query,
+                context_summary="Hermes service unavailable; recall skipped.",
+                success=False,
+            )
+        try:
+            result = await hermes_service.recall(query, context={})
+            return name, HermesRecallResult(
+                query=query,
+                context_summary=result.get("context_summary", ""),
+                graph_paths=result.get("graph_paths", []),
+                vector_matches=result.get("vector_matches", []),
+            )
+        except Exception as exc:
+            logger.warning("hermes_recall.tool_failed", error=str(exc))
+            return name, HermesRecallResult(
+                query=query,
+                context_summary=f"Recall failed: {exc}",
+                success=False,
+            )
+
+    if name == "hermes_store":
+        fact = tool_call.get("fact", "")
+        if hermes_service is None:
+            return name, HermesStoreResult(
+                fact=fact,
+                stored_neo4j=False,
+                stored_qdrant=False,
+                success=False,
+            )
+        try:
+            result = await hermes_service.store(fact)
+            return name, HermesStoreResult(
+                fact=fact,
+                stored_neo4j=result.get("stored_neo4j", False),
+                stored_qdrant=result.get("stored_qdrant", False),
+                fact_id=result.get("fact_id", ""),
+            )
+        except Exception as exc:
+            logger.warning("hermes_store.tool_failed", error=str(exc))
+            return name, HermesStoreResult(
+                fact=fact,
+                stored_neo4j=False,
+                stored_qdrant=False,
+                success=False,
+            )
+
+    if name == "hermes_learn":
+        correction = tool_call.get("correction", "")
+        if hermes_service is None:
+            return name, HermesLearnResult(
+                correction_text=correction,
+                success=False,
+            )
+        try:
+            result = await hermes_service.learn(correction)
+            return name, HermesLearnResult(
+                correction_text=correction,
+                extracted_facts=result.get("extracted_facts", []),
+                corrections_applied=result.get("corrections_applied", 0),
+            )
+        except Exception as exc:
+            logger.warning("hermes_learn.tool_failed", error=str(exc))
+            return name, HermesLearnResult(
+                correction_text=correction,
+                success=False,
+            )
+
+    if name == "reply_email":
+        inbox_id = tool_call.get("inbox_id", "")
+        message_id = tool_call.get("message_id", "")
+        body = tool_call.get("body", "")
+        result_str = await _reply_email(
+            inbox_id=inbox_id, message_id=message_id, body=body
+        )
+        success = "successfully" in result_str.lower()
+        sent_msg_id = ""
+        if "Message ID:" in result_str:
+            sent_msg_id = result_str.split("Message ID:")[-1].strip()
+        return name, EmailToolResult(
+            message=result_str,
+            message_id=sent_msg_id,
+            success=success,
+            body=body,
+        )
+
+    if name == "send_email":
+        to = tool_call.get("to", "")
+        subject = tool_call.get("subject", "")
+        body = tool_call.get("body", "")
+        result_str = await _send_email(to=to, subject=subject, body=body)
+        success = "successfully" in result_str.lower()
+        sent_msg_id = ""
+        if "Message ID:" in result_str:
+            sent_msg_id = result_str.split("Message ID:")[-1].strip()
+        return name, EmailToolResult(
+            message=result_str,
+            message_id=sent_msg_id,
+            success=success,
+        )
+
+    # ── LDR deep research tool (REQ-310) ────────────────────────
+    if name == "deep_research":
+        query = tool_call.get("query", "")
+        mode = tool_call.get("mode", "quick")
+        if ldr_service is None:
+            return name, LDRResult(
+                query=query,
+                summary="LDR service unavailable; research skipped.",
+                success=False,
+            )
+        try:
+            result = await ldr_service.research(query, mode=mode)
+            return name, LDRResult(
+                query=query,
+                summary=result.get("summary", ""),
+                findings=result.get("findings", []),
+                sources=result.get("sources", []),
+                mode=mode,
+            )
+        except Exception as exc:
+            logger.warning("deep_research.tool_failed", error=str(exc))
+            return name, LDRResult(
+                query=query,
+                summary=f"Research failed: {exc}",
+                success=False,
+            )
+
+    # ── Document tools (REQ-311) ────────────────────────────────
+    if name == "analyze_document":
+        file_path = tool_call.get("file_path", "")
+        if document_service is None:
+            return name, DocumentAnalysisResult(
+                file_path=file_path, success=False,
+            )
+        try:
+            result = await document_service.analyze_document(file_path)
+            if "error" in result:
+                return name, DocumentAnalysisResult(
+                    file_path=file_path, success=False,
+                )
+            quality = result.get("quality", {})
+            return name, DocumentAnalysisResult(
+                file_path=file_path,
+                file_type=result.get("file_type", ""),
+                page_count=result.get("page_count", 0),
+                word_count=result.get("word_count", 0),
+                text=result.get("text", "")[:2000],
+                quality_level=quality.get("level", "unknown"),
+                quality_score=quality.get("score", 0.0),
+            )
+        except Exception as exc:
+            logger.warning("analyze_document.tool_failed", error=str(exc))
+            return name, DocumentAnalysisResult(
+                file_path=file_path, success=False,
+            )
+
+    if name == "create_report":
+        title = tool_call.get("title", "Untitled Report")
+        # Parse sections from a simple format: "Heading1::content1||Heading2::content2"
+        sections_str = tool_call.get("sections", "")
+        sections = []
+        if sections_str:
+            for part in sections_str.split("||"):
+                if "::" in part:
+                    heading, content = part.split("::", 1)
+                    sections.append({"heading": heading.strip(), "content": content.strip()})
+                else:
+                    sections.append({"heading": "", "content": part.strip()})
+        if not sections:
+            sections = [{"heading": "Overview", "content": "No content provided."}]
+        if document_service is None:
+            return name, DocumentCreationResult(success=False, title=title)
+        try:
+            file_path = await document_service.create_report(title=title, sections=sections)
+            return name, DocumentCreationResult(
+                file_path=file_path, document_type="report", title=title,
+            )
+        except Exception as exc:
+            logger.warning("create_report.tool_failed", error=str(exc))
+            return name, DocumentCreationResult(success=False, title=title)
+
+    # ── Agent delegation tools (REQ-312) ────────────────────────
+    if name == "delegate_to_agent":
+        agent_slug = tool_call.get("agent_slug", "") or tool_call.get("agent", "")
+        task = tool_call.get("task", "")
+        context = tool_call.get("context", "")
+        region = tool_call.get("region", "")
+        if agent_delegator is None:
+            return name, AgentDelegationResult(
+                agent_slug=agent_slug, success=False,
+            )
+        try:
+            result = await agent_delegator.delegate(
+                agent_slug, task, context=context,
+                region=region or None,
+            )
+            return name, AgentDelegationResult(
+                agent_slug=result.get("agent_slug", agent_slug),
+                agent_name=result.get("agent_name", ""),
+                response=result.get("response", ""),
+                region=result.get("region", region),
+                success=result.get("success", False),
+            )
+        except Exception as exc:
+            logger.warning("delegate_to_agent.tool_failed: %s", exc)
+            return name, AgentDelegationResult(
+                agent_slug=agent_slug, success=False,
+            )
+
+    if name == "list_agents":
+        division = tool_call.get("division", "")
+        keyword = tool_call.get("keyword", "")
+        region = tool_call.get("region", "")
+        if agent_delegator is None:
+            return name, AgentListingResult(success=False)
+        try:
+            agents = agent_delegator.list_agents(
+                division=division or None,
+                keyword=keyword or None,
+                region=region or None,
+            )
+            return name, AgentListingResult(
+                division=division,
+                keyword=keyword,
+                region=region,
+                agents=agents,
+            )
+        except Exception as exc:
+            logger.warning("list_agents.tool_failed: %s", exc)
+            return name, AgentListingResult(success=False)
 
     # Unknown tool: return an error-typed result using CalculationResult base
     return name, CalculationResult(

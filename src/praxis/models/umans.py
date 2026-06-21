@@ -59,15 +59,19 @@ UMANS_MODELS: dict[str, UmansModelConfig] = {
         temperature=0.3,
         description="Memory model for Hermes state management and learning loops",
     ),
-    "umans-embed-small": UmansModelConfig(
-        name="umans-embed-small",
-        family="embed",
+    "umans-qwen3.6-35b-a3b": UmansModelConfig(
+        name="umans-qwen3.6-35b-a3b",
+        family="qwen",
         concurrency_limit=8,
-        context_window=8192,
-        max_tokens=0,  # Embedding models do not generate tokens
+        context_window=131_072,
+        max_tokens=8192,
         temperature=0.0,
-        description="Embedding model for sender vector history (1536 dimensions)",
+        description="Qwen 3.6 35B-A3B (Qwen family, alternative to umans-flash)",
     ),
+    # Note: umans-embed-* models are NOT in the Umans /v1/models list as of
+    # 2026-06-20. The OpenAI-compatible /v1/embeddings endpoint returns 404.
+    # The embedding_node in the graph handles this gracefully (logs warning,
+    # continues). Re-enable embed model when Umans adds the endpoint.
 }
 
 

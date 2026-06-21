@@ -53,6 +53,19 @@ class Settings(BaseSettings):
     # ── PostgreSQL (LangGraph Checkpointing) ──────────────────────
     postgres_dsn: str = "postgresql://praxis:***@127.0.0.1:5432/praxis"
 
+    # ── LDR (Local Deep Research) ────────────────────────────────
+    ldr_url: str = "http://127.0.0.1:5001"
+    ldr_api_key: str = "praxis_ldr_2026"
+
+    # ── Region / Localization ─────────────────────────────────────
+    # Default region for region-aware agent delegation.  Agents will adapt
+    # advice to local laws, regulations, taxes, and business norms.
+    default_region: str = ""
+
+    # ── Attachments & Failed-event recovery ─────────────────────────
+    attachments_dir: str = "/tmp/praxis_documents"
+    failed_events_path: str = "/tmp/praxis_failed_events.jsonl"
+
     # ── Hermes (Phase 3 agent platform) ───────────────────────────
     hermes_base_url: str = "http://127.0.0.1:8787"
     hermes_api_key: str = "hermes-dev-key"

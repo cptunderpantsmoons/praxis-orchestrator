@@ -7,6 +7,9 @@ from fastapi.testclient import TestClient
 
 from praxis.webhooks.svix import compute_svix_signature, verify_svix_signature
 
+# Test webhook secret — base64 for "testsecret"
+TEST_SECRET = "whsec_dGVzdHNlY3JldA=="
+
 # ── Svix Verification Unit Tests ───────────────────────────────
 
 
@@ -150,3 +153,71 @@ class TestWebhookEndpoint:
 
         response = client.post("/webhook/email", content=body, headers=headers)
         assert response.status_code == 401
+
+    def test_graph_failure_is_acknowledged_and_persisted(
+        self, client: TestClient, svix_signer, monkeypatch, tmp_path
+    ):
+        """If graph processing fails, webhook still 200s and persists the event."""
+        from praxis.config import get_settings
+
+        failed_path = tmp_path / "failed_events.jsonl"
+        get_settings.cache_clear()
+        monkeypatch.setenv("AGENTMAIL_WEBHOOK_SECRET", TEST_SECRET)
+        monkeypatch.setenv("FAILED_EVENTS_PATH", str(failed_path))
+
+        async def _raise(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        async def _noop(*args, **kwargs):
+            return None
+
+        # Make the graph raise
+        monkeypatch.setattr(
+            "praxis.webhooks.email._invoke_graph",
+            staticmethod(_raise),
+        )
+
+        payload = {
+            "type": "event",
+            "event_type": "message.received",
+            "event_id": "evt_fail123",
+            "message": {
+                "id": "msg_fail123",
+                "from": "sender@example.com",
+                "to": ["agent@praxis.ai"],
+                "subject": "Fails",
+                "body": "This will fail internally.",
+            },
+            "thread": {"thread_id": "thr_fail123"},
+        }
+        body = json.dumps(payload).encode()
+        headers = svix_signer(body)
+
+        response = client.post("/webhook/email", content=body, headers=headers)
+
+        # Webhook is acknowledged so provider won't retry storm us.
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "deferred"
+        assert data["thread_id"] == "thread_thr_fail123"
+
+        # Failure should be persisted.
+        assert failed_path.exists()
+        lines = failed_path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["event_id"] == "evt_fail123"
+        assert "boom" in entry["error"]
+
+        # Retry endpoint replays successfully once failure is fixed.
+        monkeypatch.setattr(
+            "praxis.webhooks.email._invoke_graph",
+            staticmethod(_noop),
+        )
+        retry_resp = client.post("/admin/retry-failed?event_id=evt_fail123")
+        assert retry_resp.status_code == 200
+        assert retry_resp.json()["status"] == "accepted_retry"
+        # Resolved entry removed.
+        assert failed_path.read_text().strip() == ""
+
+        get_settings.cache_clear()

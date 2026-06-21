@@ -6,6 +6,7 @@ for upserting, searching, and managing sender embeddings.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC
 from typing import Any
 
@@ -23,18 +24,53 @@ from qdrant_client.models import (
 logger = structlog.get_logger()
 
 
+def _normalize_email(raw: str) -> str:
+    """Extract the bare email address from an RFC 5322 sender string.
+
+    Handles ``"Name <user@example.com>"`` and ``user@example.com`` forms,
+    lower-casing the result for stable, case-insensitive identity. Returns the
+    trimmed input if it does not look like an address.
+    """
+    if not raw:
+        return ""
+    addr = raw.strip()
+    # "Display Name <addr@domain>" → addr@domain
+    if "<" in addr and ">" in addr:
+        start = addr.rfind("<") + 1
+        end = addr.rfind(">")
+        if start < end:
+            addr = addr[start:end].strip()
+    return addr.strip().lower()
+
+
+def _point_id(email: str) -> str:
+    """Return a deterministic UUID5 (as string) for a sender email.
+
+    Qdrant point IDs must be unsigned integers or UUIDs; arbitrary strings
+    (e.g. ``"AgentMail <gareth@agentmail.to>"``) are rejected with HTTP 400.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, _normalize_email(email)))
+
+
 class QdrantSenderClient:
     """Async wrapper around AsyncQdrantClient for sender embeddings."""
 
     def __init__(
         self,
         url: str | None = None,
+        api_key: str | None = None,
         collection: str = "praxis_senders",
-        vector_size: int = 1536,
+        # Must match ``praxis.services.embedding_service.DEFAULT_DIM`` (384 for
+        # ``BAAI/bge-small-en-v1.5``). Was 1536 historically — that mismatched
+        # the actual vector size and caused every upsert to 400.
+        vector_size: int = 384,
         distance: Distance = Distance.COSINE,
         timeout: float = 5.0,
     ) -> None:
-        self.url = url
+        from praxis.config import get_settings
+        settings = get_settings()
+        self.url = url or settings.qdrant_url
+        self.api_key = api_key or settings.qdrant_api_key
         self.collection = collection
         self.vector_size = vector_size
         self.distance = distance
@@ -66,12 +102,18 @@ class QdrantSenderClient:
         """
         await self._ensure_client()
         now_iso = _now_iso()
+        # Normalise the address: "AgentMail <gareth@agentmail.to>" → "gareth@agentmail.to".
+        # The raw sender header is what flows in from the webhook; store/look up by
+        # the bare lower-cased address and use a deterministic UUID as the Qdrant
+        # point id (Qdrant rejects arbitrary strings as point ids with HTTP 400).
+        email = _normalize_email(email)
+        point_id = _point_id(email)
         # Fetch existing point (if any) to track first_seen + total_emails
         existing_metadata: dict[str, Any] = {}
         try:
             existing = await self._client.retrieve(
                 collection_name=self.collection,
-                ids=[email],
+                ids=[point_id],
                 with_payload=True,
                 with_vectors=False,
             )
@@ -95,7 +137,7 @@ class QdrantSenderClient:
             merged_metadata.update(metadata)
 
         point = PointStruct(
-            id=email,
+            id=point_id,
             vector=embedding,
             payload={
                 "email": email,
@@ -120,18 +162,21 @@ class QdrantSenderClient:
         """Find similar senders by embedding cosine similarity."""
         await self._ensure_client()
         try:
-            results = await self._client.search(
+            # AsyncQdrantClient uses query_points (not search) for vector search
+            results = await self._client.query_points(
                 collection_name=self.collection,
-                query_vector=query_embedding,
+                query=query_embedding,
                 limit=limit,
+                with_payload=True,
             )
             return [
                 {
-                    "email": r.payload["email"],
-                    "score": r.score,
-                    "metadata": r.payload.get("metadata", {}),
+                    "payload": p.payload or {},
+                    "email": (p.payload or {}).get("email", "unknown"),
+                    "score": p.score or 0.0,
+                    "metadata": (p.payload or {}).get("metadata", {}),
                 }
-                for r in results
+                for p in results.points
             ]
         except Exception as exc:
             logger.warning("qdrant.search_failed", error=str(exc))
@@ -140,26 +185,29 @@ class QdrantSenderClient:
     async def get_sender_history(self, email: str, limit: int = 5) -> list[dict]:
         """Retrieve recent triage results for a sender."""
         await self._ensure_client()
+        normalized = _normalize_email(email)
         try:
-            records = await self._client.scroll(
+            points, _next_offset = await self._client.scroll(
                 collection_name=self.collection,
-                scroll_filter=Filter(must=[FieldCondition(key="email", match=MatchValue(value=email))]),
+                scroll_filter=Filter(must=[FieldCondition(key="email", match=MatchValue(value=normalized))]),
                 limit=limit,
             )
-            return [r[0].payload for r in records[0]]
+            # ``points`` is a list of ``Record`` objects, each with ``.payload``
+            return [p.payload for p in points]
         except Exception as exc:
-            logger.warning("qdrant.history_failed", email=email, error=str(exc))
+            logger.warning("qdrant.history_failed", email=normalized, error=str(exc))
             return []
 
     async def delete_sender(self, email: str) -> bool:
         """Remove a sender record from Qdrant."""
         await self._ensure_client()
+        point_id = _point_id(email)
         try:
-            await self._client.delete(self.collection, points_selector=[email])
-            logger.info("qdrant.delete_sender", email=email)
+            await self._client.delete(self.collection, points_selector=[point_id])
+            logger.info("qdrant.delete_sender", email=_normalize_email(email))
             return True
         except Exception as exc:
-            logger.warning("qdrant.delete_failed", email=email, error=str(exc))
+            logger.warning("qdrant.delete_failed", email=_normalize_email(email), error=str(exc))
             return False
 
     async def health_check(self) -> bool:
@@ -177,7 +225,10 @@ class QdrantSenderClient:
         """Lazy-initialize the Qdrant client and create collection if needed."""
         if self._client is not None:
             return
-        self._client = AsyncQdrantClient(url=self.url, timeout=self.timeout)
+        client_kwargs: dict[str, Any] = {"url": self.url, "timeout": self.timeout}
+        if self.api_key:
+            client_kwargs["api_key"] = self.api_key
+        self._client = AsyncQdrantClient(**client_kwargs)
         # Create collection if not exists
         try:
             collections = await self._client.get_collections()

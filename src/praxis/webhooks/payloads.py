@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from praxis.models.schemas import InboundEmail
+from praxis.models.schemas import EmailAttachment, InboundEmail
 
 # ── Event-type constants ──────────────────────────────────────
 
@@ -80,6 +80,7 @@ class ParsedEvent:
     subject: str = ""
     body: str = ""
     html_body: str | None = None
+    attachments: list[EmailAttachment] = field(default_factory=list)
     is_spam: bool = False
     is_blocked: bool = False
     is_unauthenticated: bool = False
@@ -114,6 +115,7 @@ class ParsedEvent:
             subject=self.subject,
             body=self.body,
             html_body=self.html_body,
+            attachments=list(self.attachments),
             received_at=datetime.now(UTC),
         )
 
@@ -126,6 +128,32 @@ def _extract_address(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("email", ""))
     return str(value) if value is not None else ""
+
+
+def _parse_attachments(value: Any) -> list[EmailAttachment]:
+    """Normalize the ``attachments`` list from an AgentMail message."""
+    if not value:
+        return []
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    attachments: list[EmailAttachment] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        filename = str(item.get("filename", "") or "")
+        if not filename:
+            continue
+        attachments.append(
+            EmailAttachment(
+                filename=filename,
+                size=int(item.get("size", 0) or 0),
+                content_type=str(item.get("content_type", "") or "application/octet-stream"),
+                attachment_id=str(item.get("attachment_id", "") or ""),
+            )
+        )
+    return attachments
 
 
 def _extract_recipients(value: Any) -> list[str]:
@@ -150,8 +178,9 @@ def _parse_received(message: dict[str, Any], thread: dict[str, Any], event_type:
         sender=_extract_address(message.get("from_") or message.get("from") or message.get("sender")),
         recipients=_extract_recipients(message.get("to")),
         subject=str(message.get("subject", "") or ""),
-        body=str(message.get("body", "") or ""),
+        body=str(message.get("body", "") or message.get("text", "") or ""),
         html_body=message.get("html_body") or message.get("html"),
+        attachments=_parse_attachments(message.get("attachments")),
         is_spam=(event_type == EVENT_MESSAGE_RECEIVED_SPAM),
         is_blocked=(event_type == EVENT_MESSAGE_RECEIVED_BLOCKED),
         is_unauthenticated=(event_type == EVENT_MESSAGE_RECEIVED_UNAUTH),
@@ -163,19 +192,34 @@ def parse_agentmail_event(payload: dict[str, Any] | None) -> ParsedEvent | None:
 
     Returns ``None`` for unknown event types, empty payloads, or ``None``
     input — callers should treat that as "acknowledge and ignore".
+
+    Handles two payload shapes:
+    1. The documented AgentMail format with ``event_type`` / ``message`` /
+       ``thread`` at the top level.
+    2. A nested ``{"type": "...", "data": {"event_type": "...", "message": ...}}``
+       shape used by some webhook relays and test harnesses.
     """
     if not payload or not isinstance(payload, dict):
         return None
 
-    event_type = payload.get("event_type")
+    # Accept event_type at the top level or inside a "data" wrapper.
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+    event_type = (
+        payload.get("event_type")
+        or data.get("event_type")
+        or data.get("type")
+        or payload.get("type")
+    )
     if not event_type or event_type not in KNOWN_EVENTS:
         return None
 
-    event_id = str(payload.get("event_id", "") or "")
+    event_id = str(payload.get("event_id", "") or data.get("event_id", "") or "")
 
     if event_type in RECEIVED_EVENTS:
-        message = payload.get("message") or {}
-        thread = payload.get("thread") or {}
+        message = payload.get("message") or data.get("message") or {}
+        thread = payload.get("thread") or data.get("thread") or {}
         evt = _parse_received(message, thread, event_type)
         evt.event_id = event_id
         return evt

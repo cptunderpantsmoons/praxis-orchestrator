@@ -32,7 +32,11 @@ RUN uv sync --frozen --no-dev --no-install-project && \
         "asyncpg>=0.29.0" \
         "psycopg[binary]>=3.1.0" \
         "langgraph-checkpoint-postgres>=2.0.0" \
-        "agentmail>=0.1.0"
+        "agentmail>=0.1.0" \
+        "fastembed>=0.2.0" \
+        "python-docx>=1.1.0" \
+        "openpyxl>=3.1.0" \
+        "pypdf>=4.0.0"
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
@@ -64,14 +68,22 @@ COPY --chown=root:root src/ /app/src/
 COPY --chown=root:root pyproject.toml /app/
 
 # Ensure /app is readable by the praxis user (no write access needed at runtime)
-RUN chown -R praxis:praxis /app && chmod -R 555 /app
+# But /app/.cache must be writable for the HuggingFace model cache
+RUN chown -R praxis:praxis /app && \
+    chmod -R 555 /app && \
+    mkdir -p /app/.cache/huggingface && \
+    chown -R praxis:praxis /app/.cache && \
+    chmod -R 755 /app/.cache
 
 # Set path to use the venv and find the source
+# HuggingFace cache must be writable by the non-root praxis user
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src:$PYTHONPATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    ENVIRONMENT=production
+    ENVIRONMENT=production \
+    HF_HOME=/app/.cache/huggingface \
+    HUGGINGFACE_HUB_CACHE=/app/.cache/huggingface/hub
 
 # Drop privileges
 USER praxis

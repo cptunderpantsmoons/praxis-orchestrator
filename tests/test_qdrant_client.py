@@ -63,13 +63,16 @@ async def test_upsert_sender_handles_failure(client: QdrantSenderClient) -> None
 
 @pytest.mark.asyncio
 async def test_get_similar_senders_returns_list(client: QdrantSenderClient) -> None:
-    """get_similar_senders searches Qdrant and returns a list of dicts."""
-    mock_result = MagicMock()
-    mock_result.payload = {"email": "similar@example.com", "metadata": {}}
-    mock_result.score = 0.95
-    client._client.search = AsyncMock(return_value=[mock_result])
+    """get_similar_senders queries Qdrant and returns a list of dicts."""
+    mock_point = MagicMock()
+    mock_point.payload = {"email": "similar@example.com", "metadata": {}}
+    mock_point.score = 0.95
+    # AsyncQdrantClient.query_points returns a QueryResponse with .points
+    mock_response = MagicMock()
+    mock_response.points = [mock_point]
+    client._client.query_points = AsyncMock(return_value=mock_response)
 
-    results = await client.get_similar_senders([0.1] * 1536, limit=5)
+    results = await client.get_similar_senders([0.1] * 384, limit=5)
     assert isinstance(results, list)
     assert len(results) == 1
     assert results[0]["email"] == "similar@example.com"
@@ -81,8 +84,9 @@ async def test_get_sender_history_returns_list(client: QdrantSenderClient) -> No
     """get_sender_history scrolls Qdrant and returns a list of payloads."""
     mock_point = MagicMock()
     mock_point.payload = {"email": "test@example.com"}
-    # scroll returns (list of (point, score) tuples, next_offset)
-    client._client.scroll = AsyncMock(return_value=([(mock_point, None)], None))
+    # AsyncQdrantClient.scroll returns (list[Record], next_page_offset) — Record
+    # is an object with a .payload attribute, not a tuple.
+    client._client.scroll = AsyncMock(return_value=([mock_point], None))
 
     results = await client.get_sender_history("test@example.com", limit=10)
     assert isinstance(results, list)

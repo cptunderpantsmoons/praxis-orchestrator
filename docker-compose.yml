@@ -6,7 +6,7 @@ services:
       - "127.0.0.1:7687:7687"
       - "127.0.0.1:7474:7474"
     environment:
-      - NEO4J_AUTH=neo4j/...word
+      - NEO4J_AUTH=neo4j/praxis_neo4j_pwd_2026
       - NEO4J_apoc_export_file_enabled=true
       - NEO4J_apoc_import_file_enabled=true
       - NEO4J_apoc_import_file_use__neo4j__config=true
@@ -26,7 +26,7 @@ services:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     environment:
-      - QDRANT__SERVICE__API_KEY=***_key
+      - QDRANT__SERVICE__API_KEY=praxis_qdrant_key_2026
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
@@ -40,7 +40,7 @@ services:
       - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=praxis
-      - POSTGRES_PASSWORD=***_password
+      - POSTGRES_PASSWORD=praxis_pg_pwd
       - POSTGRES_DB=praxis
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -54,14 +54,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
+    network_mode: host
     env_file:
       - .env
+    # Only inject host/port routing here — secrets come from .env via env_file.
+    # A previous version hardcoded POSTGRES_DSN here with a stale 3-char password,
+    # which overrode the correct env_file value and broke Postgres auth. Keep
+    # DSNs out of this section.
     environment:
-      - NEO4J_URI=bolt://neo4j:7687
-      - QDRANT_URL=http://qdrant:6333
-      - POSTGRES_DSN=postgresql://praxis:***@postgres:5432/praxis
+      - NEO4J_URI=bolt://127.0.0.1:7687
+      - QDRANT_URL=http://127.0.0.1:6333
+      - PUBLIC_URL=https://praxis.2.25.195.193.sslip.io
     depends_on:
       neo4j:
         condition: service_started
@@ -69,8 +72,6 @@ services:
         condition: service_started
       postgres:
         condition: service_started
-    networks:
-      - praxis_net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -78,6 +79,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    labels:
+      - traefik.enable=true
+      - "traefik.http.routers.praxis-app.rule=Host(`praxis.2.25.195.193.sslip.io`) || Host(`praxis.srv1603169.hstgr.cloud`)"
+      - traefik.http.routers.praxis-app.entrypoints=websecure
+      - traefik.http.routers.praxis-app.tls=true
+      - traefik.http.routers.praxis-app.tls.certresolver=letsencrypt
+      - traefik.http.services.praxis-app.loadbalancer.server.port=8000
 
 volumes:
   neo4j_data:

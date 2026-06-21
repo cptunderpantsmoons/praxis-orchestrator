@@ -106,6 +106,43 @@ def test_parse_message_received_unauthenticated() -> None:
     assert evt.is_unauthenticated is True
 
 
+def test_parse_message_received_with_attachments() -> None:
+    """The parser extracts attachment metadata including attachment_id."""
+    payload = {
+        "event_type": "message.received",
+        "event_id": "evt_attach",
+        "message": {
+            "id": "msg_002",
+            "from_": "bob@example.com",
+            "to": ["agent@praxis.to"],
+            "subject": "Spreadsheet analysis request",
+            "body": "Please analyse",
+            "attachments": [
+                {
+                    "filename": "data.xlsx",
+                    "size": 1024,
+                    "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "attachment_id": "att_123",
+                }
+            ],
+        },
+        "thread": {"thread_id": "thr_002"},
+    }
+    evt = parse_agentmail_event(payload)
+    assert evt is not None
+    assert len(evt.attachments) == 1
+    att = evt.attachments[0]
+    assert att.filename == "data.xlsx"
+    assert att.size == 1024
+    assert att.attachment_id == "att_123"
+    assert att.content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    inbound = evt.to_inbound_email()
+    assert inbound is not None
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].filename == "data.xlsx"
+
+
 # ── Non-received events ────────────────────────────────────────
 
 

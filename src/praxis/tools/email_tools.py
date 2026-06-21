@@ -13,13 +13,15 @@ underlying ``AgentMailV2`` wrapper bridges to the sync ``agentmail`` SDK via
 
 from __future__ import annotations
 
+import os
+
 from langchain_core.tools import StructuredTool
 
 from praxis.services.agentmail_v2 import get_agentmail_v2
 
-# Default inbox ID — provisioned via AgentMail console
-# In production, load from config or database
-DEFAULT_INBOX_ID = "ib_default_agent_inbox"
+# Inbox ID from the environment (set by docker-compose env_file → .env).
+# Falls back to a placeholder for local tests that mock AgentMail.
+DEFAULT_INBOX_ID = os.environ.get("AGENTMAIL_INBOX_ID", "ib_default_agent_inbox")
 
 
 async def _send_email(

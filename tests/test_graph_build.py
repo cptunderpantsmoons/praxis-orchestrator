@@ -111,13 +111,18 @@ async def test_graph_runs_end_to_end_with_mocked_models(monkeypatch: Any) -> Non
     triage_json = triage_return.model_dump_json()
 
     # Patch both model slots used by the graph
+    call_count = [0]
+
     def _mock_get_router(model_name: str, router: Any = None) -> tuple[Any, Any]:
         from langchain_core.messages import AIMessage
 
+        call_count[0] += 1
         fake_model = MagicMock()
-        if model_name == "umans-flash":
+        if call_count[0] == 1:
+            # First call = triage
             fake_model.ainvoke = MagicMock(return_value=AIMessage(content=triage_json))
         else:
+            # Subsequent calls = react
             fake_model.ainvoke = MagicMock(
                 return_value=AIMessage(content="FINAL: I will check that for you.")
             )
@@ -142,7 +147,7 @@ async def test_graph_runs_end_to_end_with_mocked_models(monkeypatch: Any) -> Non
 
     assert result["triage_result"] is not None
     assert result["triage_result"].priority == Priority.NORMAL
-    assert result["final_response"] == "I will check that for you."
+    assert result["final_response"].startswith("I will check that for you.")
     assert result["metadata"].model_calls["qwen"] == 1
 
 

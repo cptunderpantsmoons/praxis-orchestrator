@@ -83,7 +83,7 @@ class AgentMailV2:
         if self._sdk is None:
             import agentmail
 
-            self._sdk = agentmail.AgentMail(api_key=self._api_key, base_url=self._base_url)
+            self._sdk = agentmail.AgentMail(api_key=self._api_key)
         return self._sdk
 
     # ── Inboxes ──────────────────────────────────────────────────
@@ -126,22 +126,18 @@ class AgentMailV2:
         self,
         inbox_id: str,
         limit: int = 50,
-        cursor: str | None = None,
-        unread_only: bool = False,
-    ) -> tuple[list[Any], str | None]:
+    ) -> list[Any]:
         sdk = self._get_sdk()
         return await asyncio.to_thread(
-            sdk.messages.list,
+            sdk.inboxes.messages.list,
             inbox_id=inbox_id,
             limit=limit,
-            cursor=cursor,
-            unread_only=unread_only,
         )
 
     async def get_message(self, inbox_id: str, message_id: str) -> Any:
         sdk = self._get_sdk()
         return await asyncio.to_thread(
-            sdk.messages.get, inbox_id=inbox_id, message_id=message_id
+            sdk.inboxes.messages.get, inbox_id=inbox_id, message_id=message_id
         )
 
     async def reply_to_message(
@@ -155,10 +151,10 @@ class AgentMailV2:
         sdk = self._get_sdk()
         logger.info("agentmail.reply", inbox_id=inbox_id, message_id=message_id)
         return await asyncio.to_thread(
-            sdk.messages.reply,
+            sdk.inboxes.messages.reply,
             inbox_id=inbox_id,
             message_id=message_id,
-            body=body,
+            text=body,
             cc=cc,
             bcc=bcc,
         )
@@ -173,11 +169,11 @@ class AgentMailV2:
         sdk = self._get_sdk()
         logger.info("agentmail.forward", inbox_id=inbox_id, message_id=message_id)
         return await asyncio.to_thread(
-            sdk.messages.forward,
+            sdk.inboxes.messages.forward,
             inbox_id=inbox_id,
             message_id=message_id,
             to=to,
-            body=body,
+            text=body,
         )
 
     async def search_messages(
@@ -185,19 +181,19 @@ class AgentMailV2:
     ) -> list[Any]:
         sdk = self._get_sdk()
         return await asyncio.to_thread(
-            sdk.messages.search, inbox_id=inbox_id, q=q, limit=limit
+            sdk.inboxes.messages.search, inbox_id=inbox_id, q=q, limit=limit
         )
 
     async def mark_message_read(self, inbox_id: str, message_id: str) -> Any:
         sdk = self._get_sdk()
         return await asyncio.to_thread(
-            sdk.messages.mark_read, inbox_id=inbox_id, message_id=message_id
+            sdk.inboxes.messages.mark_read, inbox_id=inbox_id, message_id=message_id
         )
 
     async def mark_message_unread(self, inbox_id: str, message_id: str) -> Any:
         sdk = self._get_sdk()
         return await asyncio.to_thread(
-            sdk.messages.mark_unread, inbox_id=inbox_id, message_id=message_id
+            sdk.inboxes.messages.mark_unread, inbox_id=inbox_id, message_id=message_id
         )
 
     # ── Send (new outbound resource, separate from messages.*) ────
@@ -220,15 +216,14 @@ class AgentMailV2:
         to_list = [to] if isinstance(to, str) else to
         logger.info("agentmail.send", inbox_id=inbox_id, to=to_list, subject=subject)
         return await asyncio.to_thread(
-            sdk.send.send,
+            sdk.inboxes.messages.send,
             inbox_id=inbox_id,
             to=to_list,
             subject=subject,
-            body_text=body_text,
-            body_html=body_html,
+            text=body_text,
+            html=body_html,
             cc=cc,
             bcc=bcc,
-            from_addr=from_addr,
             reply_to=reply_to,
             headers=headers,
         )
@@ -300,7 +295,7 @@ class AgentMailV2:
         sdk = self._get_sdk()
         to_list = [to] if isinstance(to, str) else to
         return await asyncio.to_thread(
-            sdk.drafts.create,
+            sdk.inboxes.drafts.create,
             inbox_id=inbox_id,
             to=to_list,
             subject=subject,
@@ -310,12 +305,12 @@ class AgentMailV2:
 
     async def list_drafts(self, inbox_id: str) -> list[Any]:
         sdk = self._get_sdk()
-        return await asyncio.to_thread(sdk.drafts.list, inbox_id=inbox_id)
+        return await asyncio.to_thread(sdk.inboxes.drafts.list, inbox_id=inbox_id)
 
     async def send_draft(self, draft_id: str) -> Any:
         sdk = self._get_sdk()
         logger.info("agentmail.send_draft", draft_id=draft_id)
-        return await asyncio.to_thread(sdk.drafts.send, draft_id=draft_id)
+        return await asyncio.to_thread(sdk.inboxes.drafts.send, draft_id=draft_id)
 
     # ── Labels ───────────────────────────────────────────────────
 

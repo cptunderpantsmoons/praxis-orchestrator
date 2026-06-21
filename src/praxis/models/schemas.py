@@ -22,6 +22,11 @@ class EmailAttachment(BaseModel):
     filename: str
     size: int = Field(ge=0, description="File size in bytes")
     content_type: str = "application/octet-stream"
+    attachment_id: str = ""
+    local_path: str = Field(
+        default="",
+        description="Filesystem path where the attachment was saved",
+    )
 
 
 class InboundEmail(BaseModel):
@@ -121,6 +126,7 @@ class MemoryContext(BaseModel):
     sender_history: list[ThreadSummary] = Field(default_factory=list)
     corrections: list[CorrectionSummary] = Field(default_factory=list)
     domain_facts: dict[str, Any] = Field(default_factory=dict)
+    hindsight_memories: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ── Agent Metadata ────────────────────────────────────────────────
@@ -177,5 +183,279 @@ class CalculationResult(ToolOutput):
             expression=expression,
             value=value,
             unit=unit,
+            **kwargs,
+        )
+
+
+class HermesRecallResult(ToolOutput):
+    """Structured output of the hermes_recall tool.
+
+    Combines Neo4j graph paths and Qdrant vector matches into a concise
+    context summary synthesised by the Umans LLM (REQ-309).
+    """
+
+    query: str
+    context_summary: str
+    graph_paths: list[str] = Field(default_factory=list)
+    vector_matches: list[str] = Field(default_factory=list)
+    match_count: int
+
+    def __init__(
+        self,
+        query: str,
+        context_summary: str,
+        graph_paths: list[str] | None = None,
+        vector_matches: list[str] | None = None,
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        gp = graph_paths or []
+        vm = vector_matches or []
+        super().__init__(
+            tool_name="hermes_recall",
+            success=success,
+            query=query,
+            context_summary=context_summary,
+            graph_paths=gp,
+            vector_matches=vm,
+            match_count=len(gp) + len(vm),
+            **kwargs,
+        )
+
+
+class HermesStoreResult(ToolOutput):
+    """Structured output of the hermes_store tool.
+
+    Confirms whether a fact was persisted to Neo4j and/or Qdrant (REQ-309).
+    """
+
+    fact: str
+    stored_neo4j: bool
+    stored_qdrant: bool
+    fact_id: str = ""
+
+    def __init__(
+        self,
+        fact: str,
+        stored_neo4j: bool,
+        stored_qdrant: bool,
+        fact_id: str = "",
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        ok = stored_neo4j or stored_qdrant
+        super().__init__(
+            tool_name="hermes_store",
+            success=success and ok,
+            fact=fact,
+            stored_neo4j=stored_neo4j,
+            stored_qdrant=stored_qdrant,
+            fact_id=fact_id,
+            **kwargs,
+        )
+
+
+class HermesLearnResult(ToolOutput):
+    """Structured output of the hermes_learn tool.
+
+    Parses unstructured correction text into structured facts via the Umans
+    LLM and upserts corrections to Neo4j (REQ-309).
+    """
+
+    correction_text: str
+    extracted_facts: list[str]
+    corrections_applied: int
+
+    def __init__(
+        self,
+        correction_text: str,
+        extracted_facts: list[str] | None = None,
+        corrections_applied: int = 0,
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        ef = extracted_facts or []
+        super().__init__(
+            tool_name="hermes_learn",
+            success=success,
+            correction_text=correction_text,
+            extracted_facts=ef,
+            corrections_applied=corrections_applied,
+            **kwargs,
+        )
+
+
+class LDRResult(ToolOutput):
+    """Structured output of the deep_research tool (Local Deep Research).
+
+    Contains the research summary, key findings, and source list.
+    """
+
+    query: str = ""
+    summary: str = ""
+    findings: list[Any] = []
+    sources: list[Any] = []
+    mode: str = "quick"
+
+    def __init__(
+        self,
+        query: str = "",
+        summary: str = "",
+        findings: list | None = None,
+        sources: list | None = None,
+        mode: str = "quick",
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            tool_name="deep_research",
+            success=success,
+            query=query,
+            summary=summary,
+            findings=findings or [],
+            sources=sources or [],
+            mode=mode,
+            **kwargs,
+        )
+
+
+class DocumentAnalysisResult(ToolOutput):
+    """Structured output of the analyze_document tool.
+
+    Contains extracted text, structure, tables, metadata, and quality assessment.
+    """
+
+    file_path: str = ""
+    file_type: str = ""
+    page_count: int = 0
+    word_count: int = 0
+    text: str = ""
+    quality_level: str = "unknown"
+    quality_score: float = 0.0
+
+    def __init__(
+        self,
+        file_path: str = "",
+        file_type: str = "",
+        page_count: int = 0,
+        word_count: int = 0,
+        text: str = "",
+        quality_level: str = "unknown",
+        quality_score: float = 0.0,
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            tool_name="analyze_document",
+            success=success,
+            file_path=file_path,
+            file_type=file_type,
+            page_count=page_count,
+            word_count=word_count,
+            text=text,
+            quality_level=quality_level,
+            quality_score=quality_score,
+            **kwargs,
+        )
+
+
+class DocumentCreationResult(ToolOutput):
+    """Structured output of the create_report/create_memo/create_letter tools."""
+
+    file_path: str = ""
+    document_type: str = "report"
+    title: str = ""
+
+    def __init__(
+        self,
+        file_path: str = "",
+        document_type: str = "report",
+        title: str = "",
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            tool_name="create_document",
+            success=success,
+            file_path=file_path,
+            document_type=document_type,
+            title=title,
+            **kwargs,
+        )
+
+
+class AgentDelegationResult(ToolOutput):
+    """Structured output of the delegate_to_agent tool."""
+
+    agent_slug: str = ""
+    agent_name: str = ""
+    response: str = ""
+    region: str = ""
+
+    def __init__(
+        self,
+        agent_slug: str = "",
+        agent_name: str = "",
+        response: str = "",
+        region: str = "",
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            tool_name="delegate_to_agent",
+            success=success,
+            agent_slug=agent_slug,
+            agent_name=agent_name,
+            response=response,
+            region=region,
+            **kwargs,
+        )
+
+
+class AgentListingResult(ToolOutput):
+    """Structured output of the list_agents tool."""
+
+    division: str = ""
+    keyword: str = ""
+    region: str = ""
+    agents: list[Any] = []
+
+    def __init__(
+        self,
+        division: str = "",
+        keyword: str = "",
+        region: str = "",
+        agents: list | None = None,
+        success: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            tool_name="list_agents",
+            success=success,
+            division=division,
+            keyword=keyword,
+            region=region,
+            agents=agents or [],
+            **kwargs,
+        )
+
+
+class EmailToolResult(ToolOutput):
+    """Structured output of email send/reply tools.
+
+    Wraps the string result from AgentMail into a Pydantic model so it
+    integrates with the ReAct loop's ``model_dump_json()`` contract.
+    """
+
+    message: str
+    message_id: str = ""
+    body: str = ""
+
+    def __init__(self, message: str, message_id: str = "", **kwargs: Any) -> None:
+        super().__init__(
+            tool_name=kwargs.pop("tool_name", "email"),
+            success=kwargs.pop("success", True),
+            message=message,
+            message_id=message_id,
             **kwargs,
         )

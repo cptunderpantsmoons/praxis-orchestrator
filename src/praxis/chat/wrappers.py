@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+import structlog
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -30,6 +32,8 @@ from pydantic import ConfigDict
 from praxis.config import get_settings
 from praxis.models.umans import get_model_config
 from praxis.router import UmansConcurrencyRouter
+
+logger = structlog.get_logger()
 
 # LangChain message type -> OpenAI API role
 _ROLE_MAP: dict[type[BaseMessage], str] = {
@@ -147,13 +151,37 @@ class UmansChatModel(BaseChatModel):
             payload_kwargs["stop"] = stop
         payload_kwargs.update(kwargs)
 
-        response = await self.router.invoke(
-            model_name=self.model_name,
-            messages=api_messages,
-            **payload_kwargs,
-        )
+        # Retry with exponential backoff on transient failures.
+        max_retries = 3
+        base_delay = 1.0
+        last_exception: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                response = await self.router.invoke(
+                    model_name=self.model_name,
+                    messages=api_messages,
+                    **payload_kwargs,
+                )
+                return self._create_chat_result(response)
+            except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError) as exc:
+                last_exception = exc
+                if attempt == max_retries - 1:
+                    break
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "umans.generate_retry",
+                    model=self.model_name,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    error=str(exc),
+                    delay=delay,
+                )
+                await asyncio.sleep(delay)
+            except Exception as exc:
+                last_exception = exc
+                break
 
-        return self._create_chat_result(response)
+        raise last_exception or RuntimeError("Umans generation failed")
 
     # ── Helpers ───────────────────────────────────────────────────
 
@@ -176,7 +204,10 @@ class UmansChatModel(BaseChatModel):
 
         choice = choices[0]
         msg_data = choice.get("message", {})
-        content = msg_data.get("content", "")
+        content = msg_data.get("content", "") or ""
+        # If content is None or non-string (e.g. tool_calls-only response), default to empty string
+        if not isinstance(content, str):
+            content = ""
         finish_reason = choice.get("finish_reason")
 
         ai_message = AIMessage(content=content)
