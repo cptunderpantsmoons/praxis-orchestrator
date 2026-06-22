@@ -102,3 +102,23 @@ async def test_settings_save_submits_patch():
         await pilot.click("#save-settings")
         await pilot.pause()
         mock_client.post_settings.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_logs_screen_displays_audit_entries():
+    app = PraxisTUI(api_url="http://test:8000", admin_token="test-token")
+    from unittest.mock import AsyncMock
+    mock_client = AsyncMock()
+    mock_client.get_audit_logs = AsyncMock(return_value={
+        "entries": [
+            {"event": "webhook.graph_invoke", "level": "info", "ts": "2026-06-22T10:00:00Z"},
+            {"event": "webhook.graph_failed", "level": "error", "ts": "2026-06-22T11:00:00Z"},
+        ]
+    })
+    async with app.run_test() as pilot:
+        app.client = mock_client
+        await pilot.press("3")
+        await pilot.pause()
+        content = app.query_one("#content")
+        text = str(content)
+        assert "graph_invoke" in text or "graph_failed" in text
