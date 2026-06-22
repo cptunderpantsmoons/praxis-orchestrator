@@ -10,7 +10,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import RunnableConfig
 
 from praxis.chat.wrappers import UmansChatModel
@@ -51,6 +57,32 @@ _REASONING_PATTERNS = [
         r"^(however|so|therefore|additionally|furthermore),\s*(the user|the sender|i)",
     ]
 ]
+
+# Safe fallback reply sent when the native ReAct loop exhausts its iterations
+# without producing a usable final response. NEVER expose raw LLM reasoning.
+SAFE_FALLBACK_REPLY = (
+    "I'm reviewing your email and will respond properly shortly.\n\n"
+    "--\nPRAXIS | Enterprise Email Assistant"
+)
+
+
+def _is_reasoning_content(text: str) -> bool:
+    """Return True if every non-blank line of ``text`` matches a reasoning pattern.
+
+    Used by the native ReAct loop to decide whether to keep iterating (reasoning
+    text should never be returned as the final reply) or to break (genuine
+    user-facing content). A response is "reasoning" if every non-blank line is
+    matched by one of the :data:`_REASONING_PATTERNS` regexes.
+    """
+    if not text or not text.strip():
+        return False
+    non_blank_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not non_blank_lines:
+        return False
+    return all(
+        any(pattern.match(line) for pattern in _REASONING_PATTERNS)
+        for line in non_blank_lines
+    )
 
 
 def _clean_reply_response(text: str) -> str:
@@ -503,11 +535,259 @@ async def react_node(
     *,
     max_iterations: int = 3,
 ) -> dict[str, Any]:
-    """Run a custom ReAct reasoning loop using Kimi (umans-coder).
+    """ReAct reasoning loop — routes through native tool-calling or legacy text protocol.
 
-    The node receives an email and memory context, builds a system prompt, and
-    iteratively asks the model whether to call a tool. Dummy tools return
-    strictly typed Pydantic models (never raw strings).
+    When ``settings.tool_protocol == "native"`` (default), builds the model with
+    ``bind_tools([...])`` and loops calling ``model.ainvoke``, executing
+    ``response.tool_calls`` via ``_execute_tool`` and appending ``ToolMessage``
+    observations. Breaks when ``response.content`` is non-empty and no tool_calls.
+    If ``max_iterations`` is exhausted without resolution, sends the safe
+    fallback reply.
+
+    When ``settings.tool_protocol == "legacy"``, runs the existing ``TOOL:``/``FINAL:``
+    text-protocol path (v0.1.0 behavior preserved verbatim).
+    """
+    settings = get_settings()
+    if settings.tool_protocol == "legacy":
+        return await _react_legacy(state, config, max_iterations=max_iterations)
+    return await _react_native(state, config, max_iterations=max_iterations)
+
+
+async def _react_native(
+    state: AgentState,
+    config: RunnableConfig | None = None,
+    *,
+    max_iterations: int = 3,
+) -> dict[str, Any]:
+    """Native tool-calling ReAct loop.
+
+    Builds the model with ``bind_tools([...])`` and loops calling
+    ``model.ainvoke``. Executes ``response.tool_calls`` via ``_execute_tool``
+    (which routes ``reply_email``/``send_email`` through the dedup guard),
+    appends ``ToolMessage`` observations, and either returns when
+    ``response.content`` is non-empty (no tool_calls) or hits ``max_iterations``
+    and sends a safe fallback reply.
+    """
+    email = state["email_content"]
+    triage = state.get("triage_result")
+    memory = state.get("memory_context") or MemoryContext()
+
+    metadata = state.get("metadata") or AgentMetadata()
+    if metadata.started_at is None:
+        metadata.started_at = datetime.now(UTC)
+    # Ensure sent_message_ids set is initialised so the dedup guard can track
+    # reply_email/send_email calls across iterations.
+    sent_message_ids: set[str] = set(metadata.sent_message_ids or set())
+
+    settings = get_settings()
+    configurable = {} if config is None else (config.get("configurable") or {})
+    router = configurable.get("router")
+    hermes_service = configurable.get("hermes_service")
+    ldr_service = configurable.get("ldr_service")
+    document_service = configurable.get("document_service")
+    agent_delegator = configurable.get("agent_delegator")
+    _settings = configurable.get("settings") or settings
+    user_region = configurable.get("user_region") or _settings.default_region or ""
+
+    _router, model = _get_router_and_model(REACT_MODEL, router=router)
+
+    # Build the available tool registry. Email tools are bound so the model can
+    # invoke reply_email/send_email with structured arguments.
+    from praxis.tools.email_tools import reply_email_tool, send_email_tool
+
+    tools: list[Any] = [
+        reply_email_tool,
+        send_email_tool,
+        dummy_search,
+        dummy_calculator,
+    ]
+    if settings.sender_style_enabled:
+        try:
+            from praxis.features.sender_style import update_sender_style_tool
+            tools.append(update_sender_style_tool)
+        except ImportError:
+            # Sender-style feature not yet implemented; skip silently.
+            pass
+
+    bound_model = model.bind_tools(tools)
+
+    # Build system context
+    context_lines: list[str] = []
+    if triage:
+        context_lines.append(f"TRIAGE: {triage.model_dump_json()}")
+    if memory.sender_history:
+        context_lines.append("SENDER HISTORY:")
+        for thread in memory.sender_history:
+            context_lines.append(f"- {thread.subject} ({thread.timestamp.isoformat()})")
+    if memory.corrections:
+        context_lines.append("RELEVANT CORRECTIONS:")
+        for correction in memory.corrections:
+            context_lines.append(f"- {correction.rule}")
+    if memory.hindsight_memories:
+        context_lines.append("SENDER MEMORY (from past interactions):")
+        for mem in memory.hindsight_memories:
+            mem_text = mem.get("text", str(mem)[:200])
+            context_lines.append(f"- {mem_text}")
+
+    corrections_text = _build_correction_section(memory.corrections, email.sender)
+
+    attachment_lines: list[str] = []
+    if email.attachments:
+        attachment_lines.append("ATTACHMENTS (already saved to disk and available for analysis):")
+        for idx, att in enumerate(email.attachments, 1):
+            quoted_path = str(att.local_path).replace("\\", "/") if att.local_path else ""
+            attachment_lines.append(
+                f"  {idx}. {att.filename} "
+                f"(type={att.content_type}, size={att.size}, path={quoted_path})"
+            )
+        attachment_lines.append(
+            "MANDATORY: If the email includes attachments, call analyze_document "
+            "on every .docx, .pdf, .xlsx, .xls, .csv, .pptx, or .txt file "
+            "before composing your reply. Then reply with the findings."
+        )
+
+    inbox_id = (
+        settings.agentmail_inbox_id
+        or os.environ.get("AGENTMAIL_INBOX_ID", "")
+        or "ib_default_agent_inbox"
+    )
+
+    system_prompt = _build_praxis_v22_prompt(
+        inbox_id=inbox_id,
+        message_id=email.message_id,
+        sender=email.sender,
+        user_region=user_region,
+        corrections_text=corrections_text,
+        attachment_lines=attachment_lines,
+    )
+
+    user_prompt = "\n".join(
+        [
+            "EMAIL:",
+            f"From: {email.sender}",
+            f"Subject: {email.subject}",
+            f"Body:\n{email.body}",
+            *attachment_lines,
+            *context_lines,
+        ]
+    )
+
+    messages: list[BaseMessage] = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt),
+    ]
+
+    tool_outputs: dict[str, Any] = {}
+    final_response: str | None = None
+
+    for _iteration in range(max_iterations):
+        metadata.model_calls["qwen"] += 1
+        response = await bound_model.ainvoke(messages)
+        messages.append(response)
+
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args", {}) or {}
+                tool_call_id = tc.get("id", "")
+                # Enrich agent tools with the inferred user region if not provided
+                if user_region and tool_name in ("delegate_to_agent", "list_agents"):
+                    tool_args.setdefault("region", user_region)
+                _name, tool_result = await _execute_tool(
+                    {"name": tool_name, **tool_args},
+                    hermes_service=hermes_service,
+                    ldr_service=ldr_service,
+                    document_service=document_service,
+                    agent_delegator=agent_delegator,
+                    sent_message_ids=sent_message_ids,
+                    state=state,
+                )
+                tool_outputs[tool_name] = tool_result
+                observation = (
+                    tool_result.model_dump_json()
+                    if hasattr(tool_result, "model_dump_json")
+                    else str(tool_result)
+                )
+                messages.append(
+                    ToolMessage(content=observation, tool_call_id=tool_call_id)
+                )
+            continue
+
+        # No tool_calls — check if the content is a real reply or just reasoning.
+        content = (
+            response.content
+            if isinstance(response.content, str)
+            else str(response.content)
+        )
+        if content.strip() and not _is_reasoning_content(content):
+            # Genuine final reply — break out of the loop.
+            final_response = content.strip()
+            break
+        # Either empty content or pure reasoning text — keep iterating. The
+        # loop will exhaust max_iterations and trigger the safe fallback.
+
+    if final_response is None:
+        # Loop exhausted without a final reply — send safe fallback.
+        logger.warning(
+            "react.max_iterations_exhausted",
+            message_id=email.message_id,
+            iterations=max_iterations,
+        )
+        try:
+            await _reply_email(
+                inbox_id=inbox_id,
+                message_id=email.message_id,
+                body=SAFE_FALLBACK_REPLY,
+                sent_message_ids=sent_message_ids,
+            )
+            tool_outputs["reply_email"] = EmailToolResult(
+                message="Safe fallback sent.",
+                success=True,
+                body=SAFE_FALLBACK_REPLY,
+            )
+        except Exception as exc:
+            logger.error("react.safe_fallback_failed", error=str(exc))
+            tool_outputs["reply_email"] = EmailToolResult(
+                message=f"Safe fallback failed: {exc}",
+                success=False,
+                body=SAFE_FALLBACK_REPLY,
+            )
+        final_response = SAFE_FALLBACK_REPLY
+
+    # Strip LLM internal reasoning from the response before it goes out as an
+    # email (defensive — native tool-calling rarely produces reasoning text
+    # since the model is told to call tools, but be safe).
+    final_response = _clean_reply_response(final_response)
+
+    # Ensure the PRAXIS signature is present
+    if "PRAXIS" not in final_response:
+        final_response += "\n\n--\nPRAXIS | Enterprise Email Assistant"
+
+    logger.info(
+        "react.loop_complete",
+        final_response=final_response[:200],
+        tools_used=list(tool_outputs.keys()),
+    )
+
+    metadata.sent_message_ids = sent_message_ids
+    metadata.finished_at = datetime.now(UTC)
+    return {
+        "tool_outputs": tool_outputs,
+        "final_response": final_response,
+        "metadata": metadata,
+        "messages": [AIMessage(content=final_response)],
+    }
+
+
+async def _react_legacy(
+    state: AgentState,
+    config: RunnableConfig | None = None,
+    *,
+    max_iterations: int = 3,
+) -> dict[str, Any]:
+    """Legacy TOOL:/FINAL: text-protocol ReAct loop (v0.1.0 behavior).
+
+    Preserved verbatim from v0.1.0 for rollback safety. Do NOT modify.
     """
     email = state["email_content"]
     triage = state.get("triage_result")
@@ -760,11 +1040,19 @@ async def _execute_tool(
     ldr_service: Any | None = None,
     document_service: Any | None = None,
     agent_delegator: Any | None = None,
+    sent_message_ids: set[str] | None = None,
+    state: AgentState | None = None,
 ) -> tuple[str, Any]:
     """Execute a tool and return (tool_name, typed_output).
 
     Hermes tools (hermes_recall, hermes_store, hermes_learn) require the
     HermesService instance, passed from react_node via configurable.
+
+    For ``reply_email`` and ``send_email``, the ``sent_message_ids`` set is
+    passed through to the underlying tool function so the dedup guard can
+    prevent duplicate sends within a single run. The ``state`` parameter is
+    used to extract the inbound ``message_id`` for dedup tracking when the
+    tool call itself doesn't supply one (native tool-calling path).
     """
     name = tool_call.pop("name")
     if name == "dummy_search":
@@ -854,8 +1142,31 @@ async def _execute_tool(
         inbox_id = tool_call.get("inbox_id", "")
         message_id = tool_call.get("message_id", "")
         body = tool_call.get("body", "")
+        # Native tool-calling path: tool args don't include message_id (the
+        # inbound email's message_id is the one we reply to). Fall back to
+        # state's email_content.message_id when not provided.
+        if not message_id and state is not None:
+            message_id = state["email_content"].message_id
+        if not inbox_id:
+            inbox_id = (
+                get_settings().agentmail_inbox_id
+                or os.environ.get("AGENTMAIL_INBOX_ID", "")
+            )
+        # Dedup guard: skip the call entirely if we've already sent a reply for
+        # this message_id in the current run. This prevents the second
+        # reply_email tool_call from invoking _reply_email at all.
+        if sent_message_ids is not None and message_id in sent_message_ids:
+            return name, EmailToolResult(
+                message="duplicate:already_sent",
+                message_id=message_id,
+                success=False,
+                body=body,
+            )
         result_str = await _reply_email(
-            inbox_id=inbox_id, message_id=message_id, body=body
+            inbox_id=inbox_id,
+            message_id=message_id,
+            body=body,
+            sent_message_ids=sent_message_ids,
         )
         success = "successfully" in result_str.lower()
         sent_msg_id = ""
@@ -872,7 +1183,23 @@ async def _execute_tool(
         to = tool_call.get("to", "")
         subject = tool_call.get("subject", "")
         body = tool_call.get("body", "")
-        result_str = await _send_email(to=to, subject=subject, body=body)
+        message_id = tool_call.get("message_id", "")
+        if not message_id and state is not None:
+            message_id = state["email_content"].message_id
+        # Dedup guard: skip if we've already sent for this message_id.
+        if sent_message_ids is not None and message_id in sent_message_ids:
+            return name, EmailToolResult(
+                message="duplicate:already_sent",
+                message_id=message_id,
+                success=False,
+            )
+        result_str = await _send_email(
+            to=to,
+            subject=subject,
+            body=body,
+            sent_message_ids=sent_message_ids,
+            message_id=message_id,
+        )
         success = "successfully" in result_str.lower()
         sent_msg_id = ""
         if "Message ID:" in result_str:

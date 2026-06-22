@@ -8,10 +8,11 @@ implementations in practice.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from praxis.config import reset_settings
 from praxis.graph.build import build_graph
 from praxis.graph.checkpointer import InMemoryFallback
 from praxis.graph.state import AgentState
@@ -23,6 +24,22 @@ from praxis.models.schemas import (
     Priority,
     Sentiment,
 )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_protocol(monkeypatch):
+    """Pin the ReAct loop to the legacy TOOL:/FINAL: text-protocol.
+
+    These tests verify checkpointer persistence, not ReAct behaviour. The
+    legacy path uses a synchronous ``model.ainvoke`` mock (no ``await``)
+    and the simple ``MagicMock`` model below — the native path requires
+    ``bind_tools`` and an awaitable response, which would force every test
+    to set up a much heavier mock for behaviour that's irrelevant here.
+    """
+    monkeypatch.setenv("TOOL_PROTOCOL", "legacy")
+    reset_settings()
+    yield
+    reset_settings()
 
 
 def _make_mock_model(content: str) -> MagicMock:

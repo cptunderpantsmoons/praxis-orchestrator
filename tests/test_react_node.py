@@ -1,4 +1,12 @@
-"""Tests for the ReAct Orchestrator Node and dummy tools."""
+"""Tests for the ReAct Orchestrator Node and dummy tools.
+
+These tests exercise the LEGACY ``TOOL:``/``FINAL:`` text-protocol ReAct loop
+(``_react_legacy``). The default ``tool_protocol`` is ``native`` (native
+tool-calling via ``bind_tools``), so each test pins the protocol to ``legacy``
+via ``TOOL_PROTOCOL=legacy`` + ``reset_settings()``.
+
+For native-mode coverage see :mod:`tests.test_graph_react_native`.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from praxis.config import reset_settings
 from praxis.graph.nodes import react_node
 from praxis.graph.state import AgentState
 from praxis.models.schemas import (
@@ -18,6 +27,15 @@ from praxis.models.schemas import (
     SearchResult,
     Sentiment,
 )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_protocol(monkeypatch):
+    """Force legacy TOOL:/FINAL: text-protocol for all tests in this module."""
+    monkeypatch.setenv("TOOL_PROTOCOL", "legacy")
+    reset_settings()
+    yield
+    reset_settings()
 
 
 def _make_mock_model(content: str) -> MagicMock:

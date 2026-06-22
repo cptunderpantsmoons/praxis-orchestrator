@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from langchain_core.messages import AIMessage
 
+from praxis.config import reset_settings
 from praxis.graph import build_graph
 from praxis.graph.build import _route_triage
 from praxis.graph.state import AgentState
@@ -18,6 +19,21 @@ from praxis.models.schemas import (
     Priority,
     Sentiment,
 )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_protocol(monkeypatch):
+    """Pin ReAct to legacy TOOL:/FINAL: text-protocol for end-to-end mocks.
+
+    The end-to-end mocked-model test feeds ``FINAL:`` content directly into
+    the ReAct loop, which is the legacy protocol. Native mode would require
+    ``bind_tools`` + an awaitable ``tool_calls``-bearing response, which is
+    out of scope for graph-build wiring tests.
+    """
+    monkeypatch.setenv("TOOL_PROTOCOL", "legacy")
+    reset_settings()
+    yield
+    reset_settings()
 
 
 def _fake_umans_model(content: str) -> MagicMock:

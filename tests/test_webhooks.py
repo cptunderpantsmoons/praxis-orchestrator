@@ -87,7 +87,13 @@ class TestWebhookEndpoint:
         # Mock the model to avoid real HTTP calls
         from unittest.mock import MagicMock
 
+        from praxis.config import reset_settings
         from praxis.models.schemas import EmailTriage, Intent, Priority, Sentiment
+
+        # Pin ReAct to legacy text-protocol: the mock returns plain content
+        # (no bind_tools / awaitable tool_calls), which is the legacy path.
+        monkeypatch.setenv("TOOL_PROTOCOL", "legacy")
+        reset_settings()
 
         mock_model = MagicMock()
         mock_model.ainvoke = MagicMock(
