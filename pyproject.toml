@@ -51,6 +51,13 @@ documents = [
     "openpyxl>=3.1.0",
     "pypdf>=4.0.0",
 ]
+tui = [
+    "textual>=0.50.0",
+    "click>=8.1.0",
+]
+
+[project.scripts]
+praxis = "praxis.tui.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

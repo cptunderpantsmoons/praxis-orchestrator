@@ -1,5 +1,5 @@
 .RECIPEPREFIX := >
-.PHONY: up down lint test shell clean install install-full
+.PHONY: up down lint test shell clean install install-full tui
 
 # Boot infrastructure and start FastAPI dev server with hot-reload
 up:
@@ -35,3 +35,7 @@ install:
 # Install all dependencies including AI and infrastructure extras
 install-full:
 >uv sync --all-extras
+
+# Launch the Textual TUI for managing the PRAXIS backend
+tui:
+>uv run praxis tui
