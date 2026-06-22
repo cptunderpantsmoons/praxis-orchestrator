@@ -33,3 +33,35 @@ async def test_tab_switching_with_number_keys():
         await pilot.press("1")
         await pilot.pause()
         assert app.query_one("#dashboard-tab") is not None
+
+
+@pytest.mark.asyncio
+async def test_dashboard_shows_system_status_after_load():
+    """The dashboard should call /admin/system and render the result."""
+    app = PraxisTUI(api_url="http://test:8000", admin_token="test-token")
+    # Inject a mock client
+    from unittest.mock import AsyncMock
+
+    mock_client = AsyncMock()
+    mock_client.get_system = AsyncMock(return_value={
+        "router": {"active": {"umans-flash": 2}, "peak": {"umans-flash": 4}, "limits": {"umans-flash": 4}},
+        "checkpointer": {"type": "PostgresSaver"},
+        "services": {"neo4j": {"configured": True}, "qdrant": {"configured": True}},
+        "environment": "production",
+        "tool_protocol": "native",
+    })
+    mock_client.get_metrics = AsyncMock(return_value={
+        "counters": {"emails_received": 5, "model_calls:umans-flash": 12},
+        "gauges": {},
+        "histograms": {},
+    })
+
+    async with app.run_test() as pilot:
+        app.client = mock_client
+        # Trigger a refresh
+        await pilot.press("r")
+        await pilot.pause()
+        # The dashboard should show some indication of the loaded data
+        content = app.query_one("#content")
+        text = content.__str__()
+        assert "production" in text or "native" in text

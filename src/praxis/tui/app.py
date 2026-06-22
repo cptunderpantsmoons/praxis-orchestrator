@@ -7,6 +7,7 @@ from textual.containers import Container
 from textual.widgets import Footer, Header, Tab, Tabs
 
 from praxis.tui.api import PraxisClient
+from praxis.tui.screens.dashboard import DashboardScreen
 
 # Maps each tab ID to its human-readable title. Used to label the content
 # panel so the focused widget exposes a ``title`` (Textual 8.x stock widgets
@@ -25,8 +26,13 @@ class ContentPanel(Container):
 
     Exposes a ``title`` property mirroring the active tab's label so that the
     focused widget has a meaningful title (Textual 8.x stock widgets lack a
-    plain ``.title`` attribute). Screens (C4-C7) will mount their content
-    inside this panel.
+    plain ``.title`` attribute). Screens (C4-C7) mount their content inside
+    this panel.
+
+    ``__str__`` walks the widget tree and concatenates the ``content`` of any
+    descendant ``Static``/``Label`` so tests can assert on the rendered text
+    without going through Textual's full renderer (``Container.__str__``
+    otherwise just returns ``"ContentPanel(id='content')"``).
     """
 
     can_focus = True
@@ -42,6 +48,14 @@ class ContentPanel(Container):
     @title.setter
     def title(self, value: str) -> None:
         self._title = value
+
+    def __str__(self) -> str:
+        parts: list[str] = []
+        for node in self.walk_children():
+            content = getattr(node, "content", None)
+            if isinstance(content, str) and content:
+                parts.append(content)
+        return "\n".join(parts) if parts else super().__str__()
 
 
 class PraxisTUI(App):
@@ -89,7 +103,12 @@ class PraxisTUI(App):
             Tab("Admin", id="admin-tab"),
             id="tabs",
         )
-        yield ContentPanel(id="content", title="Dashboard")
+        # The content panel hosts the screen for whichever tab is active.
+        # Only the Dashboard screen exists in C4; C5-C7 will add Settings,
+        # Logs, and Admin screens and toggle visibility based on
+        # ``tabs.active``.
+        with ContentPanel(id="content", title="Dashboard"):
+            yield DashboardScreen(id="dashboard-screen")
         yield Footer()
 
     def action_switch_tab(self, tab_id: str) -> None:
@@ -106,10 +125,15 @@ class PraxisTUI(App):
         content.title = _TAB_TITLES.get(tab_id, "")
 
     def action_refresh(self) -> None:
-        # Each screen handles its own refresh; this is a no-op placeholder
-        # that screens can override.
+        # Each screen handles its own refresh; dispatch to the active screen.
         self.call_later(self._refresh_active_screen)
 
     async def _refresh_active_screen(self) -> None:
-        # Dispatch to the active screen's refresh method
-        pass
+        """Dispatch a refresh to whichever screen is currently active.
+
+        Only the Dashboard screen exists in C4, so we dispatch directly. C8
+        will generalize this into a per-tab lookup table once Settings,
+        Logs, and Admin screens land.
+        """
+        screen = self.query_one("#dashboard-screen", DashboardScreen)
+        await screen.refresh_data()
