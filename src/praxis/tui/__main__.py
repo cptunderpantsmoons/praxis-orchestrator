@@ -1,20 +1,23 @@
-"""``praxis tui`` CLI entry point.
-
-Implemented in Task C3; this module exists so the ``[project.scripts]``
-entry point in ``pyproject.toml`` resolves.
-"""
+"""CLI entrypoint for `praxis tui`."""
 from __future__ import annotations
 
+import os
 
-def main() -> None:
-    """Placeholder entry point — replaced in Task C3."""
-    try:
-        from praxis.tui.app import run_tui
-    except ImportError as exc:
-        raise SystemExit(
-            "TUI app not yet implemented. Complete Task C3 first."
-        ) from exc
-    run_tui()
+import click
+
+
+@click.command()
+@click.option("--url", default=None, help="PRAXIS API URL (default: http://localhost:8000)")
+@click.option("--token", default=None, help="Admin bearer token")
+def main(url: str | None, token: str | None) -> None:
+    """Launch the PRAXIS TUI."""
+    url = url or os.environ.get("PRAXIS_API_URL", "http://localhost:8000")
+    token = token or os.environ.get("PRAXIS_ADMIN_TOKEN", "")
+    if not token:
+        click.echo("Error: PRAXIS_ADMIN_TOKEN not set. Pass --token or set the env var.", err=True)
+        raise SystemExit(1)
+
+    click.echo("TUI not yet implemented — complete Task C3 to add the app shell.")
 
 
 if __name__ == "__main__":
