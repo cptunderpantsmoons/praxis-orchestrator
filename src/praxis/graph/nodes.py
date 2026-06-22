@@ -103,7 +103,7 @@ def _clean_reply_response(text: str) -> str:
 #   ReAct         -> Kimi   (umans-coder)
 #   Memory/Learn  -> GLM    (umans-glm-5.2) - used later
 TRIAGE_MODEL = "umans-flash"
-REACT_MODEL = "umans-flash"  # qwen — better at conversational email replies than kimi
+REACT_MODEL = "umans-coder"  # kimi k2.7 — stronger reasoning for Agency Roster delegation
 
 
 def _get_router_and_model(
