@@ -113,7 +113,12 @@ class SettingsScreen(Static):
             await self.load_settings()
 
     async def save_settings(self) -> None:
-        patch = {k: i.value for k, i in self._inputs.items() if i.value}
+        # Important #7: do NOT filter out empty strings. The old
+        # ``if i.value`` filter skipped empty values, making it impossible
+        # for a user to clear a field via the UI. Send all fields; the
+        # server treats "***" as no-change for secrets, and writes empty
+        # strings for non-secrets.
+        patch = {k: i.value for k, i in self._inputs.items()}
         try:
             result = await self.client.post_settings(patch)
             fields = result.get("fields", []) if isinstance(result, dict) else []

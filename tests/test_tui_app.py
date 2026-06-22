@@ -105,6 +105,40 @@ async def test_settings_save_submits_patch():
 
 
 @pytest.mark.asyncio
+async def test_settings_save_includes_empty_values():
+    """Important #7: empty input values must be sent in the patch so a
+    user can clear a field via the UI. The old ``if i.value`` filter
+    skipped empty strings, making it impossible to clear a field.
+    """
+    app = PraxisTUI(api_url="http://test:8000", admin_token="test-token")
+    from unittest.mock import AsyncMock
+    mock_client = AsyncMock()
+    mock_client.get_settings = AsyncMock(return_value={
+        "umans_base_url": "https://old.example.com",
+        "default_region": "Australia",
+    })
+    mock_client.post_settings = AsyncMock(return_value={"status": "updated"})
+    async with app.run_test() as pilot:
+        app.client = mock_client
+        await pilot.press("2")
+        await pilot.pause()
+        # Clear the default_region input.
+        region_input = app.query_one("#setting-default_region")
+        region_input.value = ""
+        await pilot.pause()
+        await pilot.click("#save-settings")
+        await pilot.pause()
+        mock_client.post_settings.assert_called_once()
+        patch = mock_client.post_settings.call_args.args[0]
+        # The empty default_region MUST be in the patch (not filtered out).
+        assert "default_region" in patch, (
+            f"default_region missing from patch: {patch}. "
+            f"The 'if i.value' filter was supposed to be removed."
+        )
+        assert patch["default_region"] == ""
+
+
+@pytest.mark.asyncio
 async def test_logs_screen_displays_audit_entries():
     app = PraxisTUI(api_url="http://test:8000", admin_token="test-token")
     from unittest.mock import AsyncMock
