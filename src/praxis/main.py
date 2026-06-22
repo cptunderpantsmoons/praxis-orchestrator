@@ -27,6 +27,15 @@ logger = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: create and tear down shared resources."""
+    # Configure structlog FIRST so all subsequent logs (including startup
+    # logs) flow through the audit log writer and SSE tail ring buffer.
+    # Important #3 & #4: without this, ``push_log_line`` is never called
+    # (SSE /tail is a no-op) and nothing writes to ``logs/audit_log.jsonl``
+    # (audit reader returns empty forever).
+    from praxis.logging_config import configure_structlog
+
+    configure_structlog()
+
     settings = get_settings()
     app.state.settings = settings
 
