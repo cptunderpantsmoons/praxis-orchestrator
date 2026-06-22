@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage
 
 from praxis.config import reset_settings
 from praxis.graph.state import AgentState
@@ -148,6 +148,39 @@ async def test_native_mode_never_returns_raw_reasoning(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_native_mode_preserves_genuine_short_reply(monkeypatch):
+    """A genuine short reply that starts with a reasoning-pattern prefix
+    (e.g., 'This is your account summary.') must NOT be discarded."""
+    monkeypatch.setenv("TOOL_PROTOCOL", "native")
+    reset_settings()
+
+    # Model returns a single-line reply that looks like reasoning but is genuine
+    genuine_response = {
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "This is your account summary: $1,234.56."},
+            "finish_reason": "stop",
+        }],
+        "model": "umans-flash",
+    }
+
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, json=genuine_response))
+    client = httpx.AsyncClient(transport=transport)
+    router = UmansConcurrencyRouter(http_client=client)
+
+    from praxis.chat.wrappers import UmansChatModel
+    model = UmansChatModel.create("umans-flash", router=router)
+
+    with patch("praxis.graph.nodes._get_router_and_model", return_value=(router, model)):
+        from praxis.graph.nodes import react_node
+        result = await react_node(_build_state())
+
+    # The genuine reply must be preserved, NOT replaced with the safe fallback
+    assert "account summary" in result.get("final_response", "").lower()
+    assert "reviewing your email" not in result.get("final_response", "").lower()
+
+
+@pytest.mark.asyncio
 async def test_native_mode_dedup_guard_prevents_duplicate_send(monkeypatch):
     """If reply_email is called twice for the same message_id, the second call is skipped."""
     monkeypatch.setenv("TOOL_PROTOCOL", "native")
@@ -176,11 +209,15 @@ async def test_native_mode_dedup_guard_prevents_duplicate_send(monkeypatch):
     send_count = {"n": 0}
 
     async def mock_reply(inbox_id, message_id, body, sent_message_ids=None):
-        send_count["n"] += 1
+        # Mimic the real email_tools._reply_email dedup guard (the single
+        # source of truth now that _execute_tool no longer short-circuits).
+        # Count only actual sends — duplicates return early without
+        # incrementing.
+        if sent_message_ids is not None and message_id in sent_message_ids:
+            return "duplicate:already_sent"
         if sent_message_ids is not None:
-            if message_id in sent_message_ids:
-                return "duplicate:already_sent"
             sent_message_ids.add(message_id)
+        send_count["n"] += 1
         return "sent successfully"
 
     with patch("praxis.graph.nodes._get_router_and_model", return_value=(router, model)), \

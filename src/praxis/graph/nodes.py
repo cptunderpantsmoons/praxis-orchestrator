@@ -50,9 +50,12 @@ from .state import AgentState
 logger = structlog.get_logger(__name__)
 
 # Patterns that indicate LLM internal reasoning (not meant for the user).
+# NOTE: "this is" was intentionally omitted — too many genuine one-line
+# replies start with it (e.g., "This is your account summary: $1,234.56.").
+# The remaining prefixes are unambiguous reasoning markers.
 _REASONING_PATTERNS = [
     re.compile(p, re.IGNORECASE) for p in [
-        r"^(let me|let's|i should|i need to|i can see|based on|the user|the sender|the email|this is|looking at|i'll|i will|analyzing|checking|reviewing|considering)\b",
+        r"^(let me|let's|i should|i need to|i can see|based on|the user|the sender|the email|looking at|i'll|i will|analyzing|checking|reviewing|considering)\b",
         r"^\s*-\s*(PRAXIS|the sender memory|the memory)\s",
         r"^(however|so|therefore|additionally|furthermore),\s*(the user|the sender|i)",
     ]
@@ -66,34 +69,11 @@ SAFE_FALLBACK_REPLY = (
 )
 
 
-def _is_reasoning_content(text: str) -> bool:
-    """Return True if every non-blank line of ``text`` matches a reasoning pattern.
-
-    Used by the native ReAct loop to decide whether to keep iterating (reasoning
-    text should never be returned as the final reply) or to break (genuine
-    user-facing content). A response is "reasoning" if every non-blank line is
-    matched by one of the :data:`_REASONING_PATTERNS` regexes.
+def _strip_prefixes(text: str) -> str:
+    """Strip leading ``FINAL:`` prefix and extract ``body=`` from unparsed
+    ``TOOL:reply_email(...)`` calls. Returns the text the cleaner should
+    operate on.
     """
-    if not text or not text.strip():
-        return False
-    non_blank_lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not non_blank_lines:
-        return False
-    return all(
-        any(pattern.match(line) for pattern in _REASONING_PATTERNS)
-        for line in non_blank_lines
-    )
-
-
-def _clean_reply_response(text: str) -> str:
-    """Strip LLM internal reasoning from the reply text before sending as email.
-
-    The kimi/qwen models often prefix the reply with analysis like
-    "Let me analyze this email..." or "The user is asking..." — this function
-    removes those lines so only the clean, user-facing response remains.
-    Also strips a leading 'FINAL:' prefix if the model put it on its own line.
-    """
-    # Strip leading "FINAL:" prefix if present
     text = text.strip()
     if text.upper().startswith("FINAL:"):
         text = text[len("FINAL:"):].strip()
@@ -104,6 +84,21 @@ def _clean_reply_response(text: str) -> str:
         body_match = re.search(r"body=(.+?)(?:\)\s*$|$)", text, re.DOTALL)
         if body_match:
             text = body_match.group(1).strip()
+
+    return text
+
+
+def _strip_reasoning_lines(text: str) -> str:
+    """Strip LLM internal reasoning lines from ``text`` and return the remainder.
+
+    Removes the same prefixes as :data:`_REASONING_PATTERNS` plus stray
+    ``FINAL:`` lines, but does NOT apply the raw-text fallback or PRAXIS
+    signature that :func:`_clean_reply_response` adds. Returns an empty
+    string when every non-blank line was reasoning — this lets callers
+    distinguish "all reasoning" (discard and retry) from "genuine reply
+    with some reasoning prefix" (use the cleaned text).
+    """
+    text = _strip_prefixes(text)
 
     lines = text.strip().splitlines()
     clean_lines: list[str] = []
@@ -120,9 +115,22 @@ def _clean_reply_response(text: str) -> str:
             continue
         clean_lines.append(line)
 
-    result = "\n".join(clean_lines).strip()
-    if not result:
-        result = text.strip()
+    return "\n".join(clean_lines).strip()
+
+
+def _clean_reply_response(text: str) -> str:
+    """Strip LLM internal reasoning from the reply text before sending as email.
+
+    The kimi/qwen models often prefix the reply with analysis like
+    "Let me analyze this email..." or "The user is asking..." — this function
+    removes those lines so only the clean, user-facing response remains.
+    Also strips a leading 'FINAL:' prefix if the model put it on its own line.
+    """
+    stripped = _strip_reasoning_lines(text)
+    # Fall back to the prefix-stripped raw text when every line matched a
+    # reasoning pattern — preserves the legacy behaviour where a one-line
+    # reasoning fragment is still returned rather than dropped entirely.
+    result = stripped or _strip_prefixes(text)
 
     # Ensure the Praxis signature is present
     if "PRAXIS" not in result:
@@ -719,10 +727,31 @@ async def _react_native(
             if isinstance(response.content, str)
             else str(response.content)
         )
-        if content.strip() and not _is_reasoning_content(content):
-            # Genuine final reply — break out of the loop.
-            final_response = content.strip()
-            break
+        if content.strip():
+            # Pre-clean with the reasoning-line stripper (no fallback, no
+            # signature) to decide whether this is a genuine reply or just
+            # LLM internal reasoning that should be discarded.
+            #
+            # - If the stripped result is non-empty, the model produced real
+            #   user-facing content (possibly with some reasoning prefix
+            #   lines mixed in). Use the full ``_clean_reply_response``
+            #   output (which strips reasoning + ensures the PRAXIS
+            #   signature) as the final reply and break.
+            # - If the stripped result is empty, every line was reasoning.
+            #   Keep iterating to give the model another chance; the loop
+            #   will exhaust ``max_iterations`` and trigger the safe
+            #   fallback below.
+            #
+            # This avoids the false-positive where a genuine one-line reply
+            # that happens to start with a reasoning-pattern prefix (e.g.
+            # "This is your account summary: $1,234.56.") would be
+            # discarded — ``_strip_reasoning_lines`` returns the line
+            # unchanged when no pattern matches it.
+            stripped = _strip_reasoning_lines(content)
+            if stripped:
+                final_response = _clean_reply_response(content)
+                break
+            # Pure reasoning — keep iterating.
         # Either empty content or pure reasoning text — keep iterating. The
         # loop will exhaust max_iterations and trigger the safe fallback.
 
@@ -756,12 +785,10 @@ async def _react_native(
 
     # Strip LLM internal reasoning from the response before it goes out as an
     # email (defensive — native tool-calling rarely produces reasoning text
-    # since the model is told to call tools, but be safe).
+    # since the model is told to call tools, but be safe). ``_clean_reply_response``
+    # also ensures the PRAXIS signature is present, so no separate signature
+    # check is needed here.
     final_response = _clean_reply_response(final_response)
-
-    # Ensure the PRAXIS signature is present
-    if "PRAXIS" not in final_response:
-        final_response += "\n\n--\nPRAXIS | Enterprise Email Assistant"
 
     logger.info(
         "react.loop_complete",
@@ -1049,10 +1076,12 @@ async def _execute_tool(
     HermesService instance, passed from react_node via configurable.
 
     For ``reply_email`` and ``send_email``, the ``sent_message_ids`` set is
-    passed through to the underlying tool function so the dedup guard can
-    prevent duplicate sends within a single run. The ``state`` parameter is
-    used to extract the inbound ``message_id`` for dedup tracking when the
-    tool call itself doesn't supply one (native tool-calling path).
+    passed through to the underlying ``_reply_email`` / ``_send_email``
+    functions in ``email_tools.py``. The dedup guard lives there — at the
+    actual send boundary — so this function does NOT short-circuit duplicate
+    sends itself. The ``state`` parameter is used to extract the inbound
+    ``message_id`` for dedup tracking when the tool call itself doesn't
+    supply one (native tool-calling path).
     """
     name = tool_call.pop("name")
     if name == "dummy_search":
@@ -1152,16 +1181,9 @@ async def _execute_tool(
                 get_settings().agentmail_inbox_id
                 or os.environ.get("AGENTMAIL_INBOX_ID", "")
             )
-        # Dedup guard: skip the call entirely if we've already sent a reply for
-        # this message_id in the current run. This prevents the second
-        # reply_email tool_call from invoking _reply_email at all.
-        if sent_message_ids is not None and message_id in sent_message_ids:
-            return name, EmailToolResult(
-                message="duplicate:already_sent",
-                message_id=message_id,
-                success=False,
-                body=body,
-            )
+        # Dedup is owned by ``_reply_email`` in email_tools.py (the actual
+        # send boundary). ``sent_message_ids`` is passed through so the
+        # email_tools layer can skip the duplicate send.
         result_str = await _reply_email(
             inbox_id=inbox_id,
             message_id=message_id,
@@ -1186,13 +1208,9 @@ async def _execute_tool(
         message_id = tool_call.get("message_id", "")
         if not message_id and state is not None:
             message_id = state["email_content"].message_id
-        # Dedup guard: skip if we've already sent for this message_id.
-        if sent_message_ids is not None and message_id in sent_message_ids:
-            return name, EmailToolResult(
-                message="duplicate:already_sent",
-                message_id=message_id,
-                success=False,
-            )
+        # Dedup is owned by ``_send_email`` in email_tools.py (the actual
+        # send boundary). ``sent_message_ids`` is passed through so the
+        # email_tools layer can skip the duplicate send.
         result_str = await _send_email(
             to=to,
             subject=subject,
