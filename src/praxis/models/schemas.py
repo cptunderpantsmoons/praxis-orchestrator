@@ -140,6 +140,9 @@ class AgentMetadata(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     model_calls: dict[str, int] = Field(default_factory=lambda: {"qwen": 0, "kimi": 0, "glm": 0})
+    # Tracks message IDs that have already been sent in this run, so the
+    # dual-send fallback (reply → send) and ReAct tool calls can't double-send.
+    sent_message_ids: set[str] = Field(default_factory=set)
 
 
 # ── Tool Outputs (Phase 2 stubs) ───────────────────────────────────

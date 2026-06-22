@@ -29,18 +29,28 @@ async def _send_email(
     subject: str,
     body: str,
     inbox_id: str = DEFAULT_INBOX_ID,
+    sent_message_ids: set[str] | None = None,
+    message_id: str | None = None,
 ) -> str:
-    """Send a new email from the agent's mailbox.
+    """Send a new email from the agent's mailbox. Dedup-guarded by message_id.
 
     Use this tool to send a new email message. The email is sent from the
     agent's dedicated AgentMail inbox.
+
+    If ``message_id`` is provided and is already in ``sent_message_ids``, the
+    function returns ``"duplicate:already_sent"`` and does NOT send. On
+    success, the ``message_id`` is added to the set.
     """
+    if message_id and sent_message_ids is not None and message_id in sent_message_ids:
+        return "duplicate:already_sent"
     client = get_agentmail_v2()
     try:
         result = await client.send_message(
             inbox_id=inbox_id, to=to, subject=subject, body_text=body
         )
         msg_id = getattr(result, "message_id", None) or "unknown"
+        if message_id and sent_message_ids is not None:
+            sent_message_ids.add(message_id)
         return f"Email sent successfully. Message ID: {msg_id}"
     except Exception as e:
         return f"Failed to send email: {e}"
@@ -50,20 +60,32 @@ async def _reply_email(
     inbox_id: str,
     message_id: str,
     body: str,
+    sent_message_ids: set[str] | None = None,
 ) -> str:
-    """Reply to an existing email in its original thread.
+    """Reply to an existing email in its original thread. Dedup-guarded.
 
     Args:
         inbox_id: The agent's inbox ID (e.g. ``ib_abc123``).
         message_id: The message ID to reply to (from ``InboundEmail.message_id``).
         body: Plain-text reply body.
+        sent_message_ids: Optional set tracking message IDs already sent in
+            this run. If ``message_id`` is already present, the function
+            returns ``"duplicate:already_sent"`` and does NOT send. On
+            success, the ``message_id`` is added to the set.
+
+    If ``sent_message_ids`` is ``None`` the dedup check is skipped entirely
+    (backwards-compatible with callers that don't pass the set).
     """
+    if sent_message_ids is not None and message_id in sent_message_ids:
+        return "duplicate:already_sent"
     client = get_agentmail_v2()
     try:
         result = await client.reply_to_message(
             inbox_id=inbox_id, message_id=message_id, body=body
         )
         msg_id = getattr(result, "message_id", None) or "unknown"
+        if sent_message_ids is not None:
+            sent_message_ids.add(message_id)
         return f"Reply sent successfully. Message ID: {msg_id}"
     except Exception as e:
         return f"Failed to send reply: {e}"
