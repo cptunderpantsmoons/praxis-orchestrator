@@ -43,6 +43,31 @@ def test_system_returns_health_snapshot(admin_token):
     assert "services" in data
 
 
+def test_system_router_snapshot_has_per_model_breakdowns(admin_token):
+    """Important #5: the router snapshot must return per-model
+    ``active``, ``peak``, and ``limits`` dicts so the TUI dashboard's
+    router panel renders (it iterates ``router["active"].items()``).
+    """
+    client = TestClient(app)
+    resp = client.get(
+        "/admin/system", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    router = data["router"]
+    # The dashboard reads these three keys.
+    assert "active" in router, f"Missing 'active' key in router snapshot: {router}"
+    assert "peak" in router, f"Missing 'peak' key in router snapshot: {router}"
+    assert "limits" in router, f"Missing 'limits' key in router snapshot: {router}"
+    # They must be dicts (per-model breakdowns), not scalars.
+    assert isinstance(router["active"], dict)
+    assert isinstance(router["peak"], dict)
+    assert isinstance(router["limits"], dict)
+    # Global totals are kept for backwards-compat.
+    assert "active_global" in router
+    assert "peak_global" in router
+
+
 def test_system_snapshot_has_environment_and_tool_protocol(admin_token):
     """The snapshot also reports environment and tool_protocol."""
     client = TestClient(app)

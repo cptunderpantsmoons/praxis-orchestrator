@@ -33,6 +33,11 @@ async def system_status(_: None = Depends(require_admin_token)) -> dict[str, Any
 def _router_snapshot() -> dict[str, Any]:
     """Best-effort snapshot of the UmansConcurrencyRouter state.
 
+    Returns per-model breakdowns so the TUI dashboard's ``router`` panel
+    (which reads ``router["active"]``, ``router["peak"]``,
+    ``router["limits"]``) renders correctly. Also includes the global
+    active/peak counts for completeness.
+
     Looks for a router on ``app.state`` first (production path). If absent
     (e.g. during unit tests with no lifespan), constructs a transient router
     just to read the configured limits.
@@ -44,10 +49,19 @@ def _router_snapshot() -> dict[str, Any]:
         router_obj = getattr(app.state, "umans_router", None)
         if router_obj is None:
             router_obj = UmansConcurrencyRouter()
+        # Per-model breakdowns (dicts of model_name -> count). The router
+        # stores these as private attrs; fall back to empty dicts if the
+        # attrs are missing (e.g. a mock router in tests).
+        active = dict(getattr(router_obj, "_active", {}) or {})
+        peak = dict(getattr(router_obj, "_peak", {}) or {})
+        limits = dict(getattr(router_obj, "limits", {}) or {})
         return {
-            "active_global": getattr(router_obj, "global_active", 0),
-            "peak_global": getattr(router_obj, "global_peak", 0),
-            "limits": router_obj.limits,
+            "active": active,
+            "peak": peak,
+            "limits": limits,
+            # Global totals (kept for backwards-compat / other consumers).
+            "active_global": getattr(router_obj, "_global_active", 0),
+            "peak_global": getattr(router_obj, "_global_peak", 0),
         }
     except Exception as exc:  # pragma: no cover — defensive
         return {"error": str(exc)}

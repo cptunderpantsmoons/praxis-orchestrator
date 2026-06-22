@@ -9,6 +9,12 @@ settings form without clobbering secrets.
 
 The update is persisted to the ``.env`` file resolved by ``_env_file_path()``
 and the settings cache is cleared so the next request sees the new values.
+
+Important #6: before writing, the patch is validated against the Pydantic
+``Settings`` model. Invalid values (e.g. a bogus ``tool_protocol``, a
+non-boolean ``sender_style_enabled``, a non-numeric ``hermes_max_retries``)
+are rejected with 422 so the app doesn't brick on the next
+``get_settings()`` call.
 """
 from __future__ import annotations
 
@@ -16,8 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import TypeAdapter, ValidationError
 
-from praxis.config import get_settings, reset_settings
+from praxis.config import Settings, get_settings, reset_settings
 from praxis.webhooks.auth import require_admin_token
 
 router = APIRouter(prefix="/admin/settings", tags=["admin"])
@@ -130,12 +137,43 @@ async def update_settings(
     A value of ``"***"`` for a secret field is treated as "no change" — the
     existing value is preserved. This lets the TUI POST the masked form back
     without clobbering secrets it cannot see.
+
+    Important #6: before writing, the patch is validated against the Pydantic
+    ``Settings`` model. Invalid values (e.g. a bogus ``tool_protocol``, a
+    non-boolean ``sender_style_enabled``, a non-numeric ``hermes_max_retries``)
+    are rejected with 422 so the app doesn't brick on the next
+    ``get_settings()`` call.
     """
     invalid = set(patch.keys()) - ALLOWED_FIELDS
     if invalid:
         raise HTTPException(
             status_code=422, detail=f"Unknown fields: {sorted(invalid)}"
         )
+
+    # Validate each field's value against the Pydantic Settings model.
+    # We build a partial dict of the changed fields and run it through
+    # ``Settings.model_validate`` — Pydantic will reject invalid Literal
+    # values, non-bool bools, non-int ints, etc. Fields sent as "***"
+    # (secret mask) are skipped because they mean "no change".
+    model_fields = Settings.model_fields
+    validation_payload: dict[str, Any] = {}
+    for key, value in patch.items():
+        if key in SECRET_FIELDS and value == _MASK:
+            continue
+        if key not in model_fields:
+            # Defensive: ALLOWED_FIELDS should be a subset of model fields.
+            # If not, skip validation for this field (it'll be written as-is).
+            continue
+        validation_payload[key] = value
+
+    if validation_payload:
+        try:
+            Settings.model_validate(validation_payload)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid settings values: {exc.errors()}",
+            ) from exc
 
     env_path = _env_file_path()
     existing = _read_env_as_dict(env_path)

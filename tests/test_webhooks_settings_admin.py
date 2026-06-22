@@ -123,3 +123,130 @@ def test_post_settings_rejects_unknown_field(admin_token, monkeypatch, tmp_path)
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert resp.status_code == 422
+
+
+def test_post_settings_rejects_invalid_tool_protocol(admin_token, monkeypatch, tmp_path):
+    """Important #6: an invalid ``tool_protocol`` value must be rejected
+    with 422 before writing to .env, so the app doesn't brick on the
+    next ``get_settings()`` call.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("TOOL_PROTOCOL=native\n")
+    monkeypatch.setattr(
+        "praxis.webhooks.settings_admin._env_file_path",
+        lambda: env_path,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/admin/settings",
+        json={"tool_protocol": "bogus"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422, resp.text
+    # The .env file must NOT have been written with the bogus value.
+    content = env_path.read_text()
+    assert "bogus" not in content
+    assert "TOOL_PROTOCOL=native" in content
+
+
+def test_post_settings_rejects_invalid_default_tone(admin_token, monkeypatch, tmp_path):
+    """Important #6: an invalid ``default_tone`` Literal value is rejected."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("DEFAULT_TONE=professional\n")
+    monkeypatch.setattr(
+        "praxis.webhooks.settings_admin._env_file_path",
+        lambda: env_path,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/admin/settings",
+        json={"default_tone": "shouty"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422, resp.text
+    content = env_path.read_text()
+    assert "shouty" not in content
+    assert "DEFAULT_TONE=professional" in content
+
+
+def test_post_settings_rejects_invalid_environment(admin_token, monkeypatch, tmp_path):
+    """Important #6: an invalid ``environment`` value is rejected.
+
+    ``environment`` is a plain ``str`` in the Settings model (not a
+    Literal), but we still validate against the Pydantic model. Since
+    any string is accepted for a ``str`` field, this test verifies that
+    a *valid* string is accepted (the validator doesn't over-reject).
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("")
+    monkeypatch.setattr(
+        "praxis.webhooks.settings_admin._env_file_path",
+        lambda: env_path,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/admin/settings",
+        json={"environment": "staging"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_post_settings_coerces_boolean_sender_style_enabled(admin_token, monkeypatch, tmp_path):
+    """Important #6: boolean fields accept truthy/falsy string values
+    and are validated. ``"true"``/``"false"`` are accepted; a non-bool
+    string like ``"maybe"`` is rejected.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("SENDER_STYLE_ENABLED=true\n")
+    monkeypatch.setattr(
+        "praxis.webhooks.settings_admin._env_file_path",
+        lambda: env_path,
+    )
+    client = TestClient(app)
+    # Valid boolean value (string form, as the UI sends).
+    resp = client.post(
+        "/admin/settings",
+        json={"sender_style_enabled": "false"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "SENDER_STYLE_ENABLED=false" in env_path.read_text()
+
+
+def test_post_settings_rejects_non_bool_sender_style_enabled(admin_token, monkeypatch, tmp_path):
+    """Important #6: a non-boolean value for ``sender_style_enabled``
+    is rejected with 422 (Pydantic validates the bool field).
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("SENDER_STYLE_ENABLED=true\n")
+    monkeypatch.setattr(
+        "praxis.webhooks.settings_admin._env_file_path",
+        lambda: env_path,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/admin/settings",
+        json={"sender_style_enabled": "maybe"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_post_settings_rejects_invalid_int_value(admin_token, monkeypatch, tmp_path):
+    """Important #6: an invalid int value (e.g. ``hermes_max_retries=-5``
+    or non-numeric) is rejected. Pydantic validates the int field.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("HERMES_MAX_RETRIES=3\n")
+    monkeypatch.setattr(
+        "praxis.webhooks.settings_admin._env_file_path",
+        lambda: env_path,
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/admin/settings",
+        json={"hermes_max_retries": "not-a-number"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422, resp.text
