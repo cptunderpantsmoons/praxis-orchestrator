@@ -65,3 +65,40 @@ async def test_dashboard_shows_system_status_after_load():
         content = app.query_one("#content")
         text = content.__str__()
         assert "production" in text or "native" in text
+
+
+@pytest.mark.asyncio
+async def test_settings_screen_loads_and_displays_form():
+    app = PraxisTUI(api_url="http://test:8000", admin_token="test-token")
+    from unittest.mock import AsyncMock
+    mock_client = AsyncMock()
+    mock_client.get_settings = AsyncMock(return_value={
+        "umans_api_key": "***",
+        "umans_base_url": "https://api.umans.ai/v1",
+        "environment": "development",
+        "tool_protocol": "native",
+    })
+    async with app.run_test() as pilot:
+        app.client = mock_client
+        await pilot.press("2")
+        await pilot.pause()
+        content = app.query_one("#content")
+        text = str(content)
+        assert "umans_base_url" in text or "https://api.umans.ai/v1" in text
+
+
+@pytest.mark.asyncio
+async def test_settings_save_submits_patch():
+    app = PraxisTUI(api_url="http://test:8000", admin_token="test-token")
+    from unittest.mock import AsyncMock
+    mock_client = AsyncMock()
+    mock_client.get_settings = AsyncMock(return_value={"umans_base_url": "https://old.example.com"})
+    mock_client.post_settings = AsyncMock(return_value={"status": "updated"})
+    async with app.run_test() as pilot:
+        app.client = mock_client
+        await pilot.press("2")
+        await pilot.pause()
+        # Find the save button and press it
+        await pilot.click("#save-settings")
+        await pilot.pause()
+        mock_client.post_settings.assert_called_once()

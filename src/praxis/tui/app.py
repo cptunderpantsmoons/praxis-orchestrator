@@ -8,6 +8,7 @@ from textual.widgets import Footer, Header, Tab, Tabs
 
 from praxis.tui.api import PraxisClient
 from praxis.tui.screens.dashboard import DashboardScreen
+from praxis.tui.screens.settings import SettingsScreen
 
 # Maps each tab ID to its human-readable title. Used to label the content
 # panel so the focused widget exposes a ``title`` (Textual 8.x stock widgets
@@ -18,6 +19,14 @@ _TAB_TITLES: dict[str, str] = {
     "settings-tab": "Settings",
     "logs-tab": "Logs",
     "admin-tab": "Admin",
+}
+
+# Maps each tab ID to the DOM id of the screen widget that should be
+# visible when that tab is active. C5 wires Dashboard and Settings; C8
+# will extend this with Logs and Admin once those screens land.
+_TAB_TO_SCREEN: dict[str, str] = {
+    "dashboard-tab": "dashboard-screen",
+    "settings-tab": "settings-screen",
 }
 
 
@@ -71,6 +80,9 @@ class PraxisTUI(App):
     #content {
         height: 1fr;
     }
+    #settings-screen {
+        display: none;
+    }
     """
 
     BINDINGS = [
@@ -104,11 +116,12 @@ class PraxisTUI(App):
             id="tabs",
         )
         # The content panel hosts the screen for whichever tab is active.
-        # Only the Dashboard screen exists in C4; C5-C7 will add Settings,
-        # Logs, and Admin screens and toggle visibility based on
-        # ``tabs.active``.
+        # Only the Dashboard and Settings screens exist in C4/C5; C6-C7 will
+        # add Logs and Admin screens. Each screen's ``display`` style is
+        # toggled in ``action_switch_tab`` based on ``tabs.active``.
         with ContentPanel(id="content", title="Dashboard"):
             yield DashboardScreen(id="dashboard-screen")
+            yield SettingsScreen(id="settings-screen")
         yield Footer()
 
     def action_switch_tab(self, tab_id: str) -> None:
@@ -117,12 +130,30 @@ class PraxisTUI(App):
         Textual 8.x ``Tabs.active`` is a ``reactive[str]`` holding the active
         tab's ID (e.g. ``"dashboard-tab"``), not an integer index. The
         BINDINGS above pass the string tab IDs directly.
+
+        Each tab maps to a screen mounted inside ``#content``; we toggle
+        ``display`` so only the active screen is visible. Switching to a
+        tab also (re)loads its data so the screen reflects the current
+        client — this matters for tests that inject a mock client after
+        ``run_test()`` starts, since each screen's ``on_mount`` ran before
+        the injection. C8 will generalize this into a per-tab lookup table
+        once Logs and Admin screens land.
         """
         tabs = self.query_one(Tabs)
         tabs.active = tab_id
         # Keep the content panel's title in sync with the active tab.
         content = self.query_one("#content", ContentPanel)
         content.title = _TAB_TITLES.get(tab_id, "")
+        # Toggle screen visibility based on the active tab.
+        screen_id = _TAB_TO_SCREEN.get(tab_id)
+        for sid in _TAB_TO_SCREEN.values():
+            widget = self.query_one(f"#{sid}")
+            widget.styles.display = "block" if sid == screen_id else "none"
+        # (Re)load the now-active screen's data so it reflects the current
+        # client. The dashboard auto-refreshes on an interval, but the
+        # settings screen only loads on tab switch / explicit refresh.
+        if tab_id == "settings-tab":
+            self.call_later(self._refresh_active_screen)
 
     def action_refresh(self) -> None:
         # Each screen handles its own refresh; dispatch to the active screen.
@@ -131,9 +162,13 @@ class PraxisTUI(App):
     async def _refresh_active_screen(self) -> None:
         """Dispatch a refresh to whichever screen is currently active.
 
-        Only the Dashboard screen exists in C4, so we dispatch directly. C8
-        will generalize this into a per-tab lookup table once Settings,
-        Logs, and Admin screens land.
+        C4 hardcoded the Dashboard; C5 adds Settings. C8 will generalize
+        this into a per-tab lookup table once Logs and Admin screens land.
         """
-        screen = self.query_one("#dashboard-screen", DashboardScreen)
-        await screen.refresh_data()
+        tabs = self.query_one(Tabs)
+        if tabs.active == "settings-tab":
+            screen = self.query_one("#settings-screen", SettingsScreen)
+            await screen.load_settings()
+        else:
+            screen = self.query_one("#dashboard-screen", DashboardScreen)
+            await screen.refresh_data()
