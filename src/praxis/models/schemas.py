@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from praxis.features.sender_style import SenderStyle
 
 # ── Inbound Email ─────────────────────────────────────────────────
 
@@ -143,6 +146,20 @@ class AgentMetadata(BaseModel):
     # Tracks message IDs that have already been sent in this run, so the
     # dual-send fallback (reply → send) and ReAct tool calls can't double-send.
     sent_message_ids: set[str] = Field(default_factory=set)
+    # Per-sender reply style loaded by context_loading_node (Task B4). ``None``
+    # means no style is stored yet — the prompt builder will fall back to
+    # default tone/signature. The runtime type is ``Any`` to avoid a circular
+    # import: ``praxis.features.sender_style`` eagerly imports
+    # ``praxis.services.neo4j_client``, which eagerly imports
+    # ``CorrectionSummary``/``ThreadSummary`` from this module. If we annotated
+    # this field as ``SenderStyle | None`` and imported ``SenderStyle`` at the
+    # top of this file, Pydantic would try to resolve that forward reference
+    # during class construction — but when ``sender_style`` is imported first
+    # (a common case), the partial-load cycle leaves ``SenderStyle`` undefined
+    # and ``AgentMetadata`` becomes uninstantiable. ``Any`` sidesteps the
+    # resolution entirely; the ``TYPE_CHECKING`` import above keeps mypy/pyright
+    # happy for callers that read ``metadata.sender_style.tone`` etc.
+    sender_style: Any = None
 
 
 # ── Tool Outputs (Phase 2 stubs) ───────────────────────────────────

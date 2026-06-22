@@ -235,9 +235,16 @@ async def context_loading_node(
 
     In Phase 2, if Neo4j is not running, the client gracefully returns empty
     context so the graph remains testable.
+
+    When ``settings.sender_style_enabled`` is True (Task B4), also fetches the
+    per-sender reply style and stores it on ``metadata.sender_style`` so the
+    ReAct prompt builder can inject a ``REPLY STYLE FOR THIS SENDER`` block.
+    Style fetching is wrapped in try/except so a Neo4j outage degrades
+    gracefully to ``None`` (no style) rather than failing the whole node.
     """
     email = state["email_content"]
     triage = state.get("triage_result")
+    metadata = state.get("metadata") or AgentMetadata()
 
     configurable = {} if config is None else (config.get("configurable") or {})
     neo4j_client = configurable.get("neo4j_client")
@@ -273,12 +280,30 @@ async def context_loading_node(
     except Exception as exc:
         logger.warning("context.hindsight_failed", error=str(exc))
 
+    # Fetch per-sender reply style (Task B4). Wrapped in try/except so a
+    # Neo4j outage or schema drift degrades to ``None`` (no style) rather
+    # than failing the whole context-loading node.
+    sender_style: Any | None = None
+    if get_settings().sender_style_enabled:
+        try:
+            from praxis.features.sender_style import get_style_for_sender
+
+            sender_style = await get_style_for_sender(email.sender)
+        except Exception as exc:
+            logger.warning(
+                "context.sender_style_failed",
+                sender=email.sender,
+                error=str(exc),
+            )
+            sender_style = None
+    metadata.sender_style = sender_style
+
     memory = MemoryContext(
         sender_history=history,
         corrections=corrections,
         hindsight_memories=hindsight_memories,
     )
-    return {"memory_context": memory}
+    return {"memory_context": memory, "metadata": metadata}
 
 
 async def embedding_node(
@@ -422,14 +447,31 @@ def _build_praxis_v22_prompt(
     user_region: str,
     corrections_text: str,
     attachment_lines: list[str],
+    sender_style: Any | None = None,
 ) -> str:
     """Build the PRAXIS v2.2 Agency Delegation Edition system prompt.
 
     Replaces the legacy enterprise-assistant prompt with the Central Orchestrator
     identity, security protocols, Agency Roster delegation rules, region-awareness
     directives, and institutional tone standards.
+
+    When ``sender_style`` is provided (a ``SenderStyle`` dataclass loaded by
+    ``context_loading_node``), a ``REPLY STYLE FOR THIS SENDER`` block is
+    injected so the model adopts the stored tone, signature, language, and
+    greeting for this sender.
     """
     region_display = user_region if user_region else "Unknown (provide internationally applicable guidance with jurisdictional caveats)"
+
+    style_block = ""
+    if sender_style is not None:
+        s = sender_style
+        style_block = (
+            "\n# REPLY STYLE FOR THIS SENDER\n"
+            f"- Tone: {s.tone}\n"
+            f"- Signature: {s.signature}\n"
+            f"- Language: {s.language or 'detect from sender email'}\n"
+            f"- Greeting: {s.greeting or 'use appropriate default'}\n"
+        )
 
     prompt = f"""\
 # CORE IDENTITY: THE CENTRAL ORCHESTRATOR
@@ -507,6 +549,12 @@ When drafting your final response:
 
 {corrections_text}
 """
+
+    # Inject per-sender reply style block (Task B4). When a style is stored
+    # for this sender, the model must adopt the stored tone, signature,
+    # language, and greeting instead of the global defaults above.
+    if style_block:
+        prompt += style_block + "\n"
 
     # Append attachment-specific instructions if attachments are present
     if attachment_lines:
@@ -667,6 +715,7 @@ async def _react_native(
         user_region=user_region,
         corrections_text=corrections_text,
         attachment_lines=attachment_lines,
+        sender_style=metadata.sender_style,
     )
 
     user_prompt = "\n".join(
@@ -884,6 +933,7 @@ async def _react_legacy(
         user_region=user_region,
         corrections_text=corrections_text,
         attachment_lines=attachment_lines,
+        sender_style=metadata.sender_style,
     )
 
     user_prompt = "\n".join(
