@@ -24,8 +24,7 @@ _TAB_TITLES: dict[str, str] = {
 }
 
 # Maps each tab ID to the DOM id of the screen widget that should be
-# visible when that tab is active. C5 wires Dashboard and Settings; C6
-# adds Logs; C7 adds Admin.
+# visible when that tab is active.
 _TAB_TO_SCREEN: dict[str, str] = {
     "dashboard-tab": "dashboard-screen",
     "settings-tab": "settings-screen",
@@ -143,13 +142,12 @@ class PraxisTUI(App):
         tab's ID (e.g. ``"dashboard-tab"``), not an integer index. The
         BINDINGS above pass the string tab IDs directly.
 
-        Each tab maps to a screen mounted inside ``#content``; we toggle
-        ``display`` so only the active screen is visible. Switching to a
-        tab also (re)loads its data so the screen reflects the current
-        client — this matters for tests that inject a mock client after
-        ``run_test()`` starts, since each screen's ``on_mount`` ran before
-        the injection. C8 will generalize this into a per-tab lookup table
-        once Logs and Admin screens land.
+        Each tab maps to a screen mounted inside ``#content`` via
+        ``_TAB_TO_SCREEN``; we toggle ``display`` so only the active screen
+        is visible. Switching to a tab also (re)loads its data so the screen
+        reflects the current client — this matters for tests that inject a
+        mock client after ``run_test()`` starts, since each screen's
+        ``on_mount`` ran before the injection.
         """
         tabs = self.query_one(Tabs)
         tabs.active = tab_id
@@ -173,11 +171,7 @@ class PraxisTUI(App):
         self.call_later(self._refresh_active_screen)
 
     async def _refresh_active_screen(self) -> None:
-        """Dispatch a refresh to whichever screen is currently active.
-
-        C4 hardcoded the Dashboard; C5 adds Settings; C6 adds Logs; C7
-        adds Admin. C8 will generalize this into a per-tab lookup table.
-        """
+        """Dispatch a refresh to whichever screen is currently active."""
         tabs = self.query_one(Tabs)
         if tabs.active == "settings-tab":
             screen = self.query_one("#settings-screen", SettingsScreen)
