@@ -159,6 +159,48 @@ Phase 4 surfaced 2 LOW non-blocking findings, both fixed in Phase 5 with regress
 - **SSRF-safe:** no user-controlled URLs are fetched
 - **OWASP Top 10 (2021):** 9/10 PASS, 1/10 PARTIAL (A09 log aggregation — deferred to ops via the runbook)
 
+## v0.2.0 — Email Bug Fix, Features, and TUI
+
+### Email reply bug fix
+The ReAct loop now uses LangChain native tool-calling, eliminating the
+text-protocol parser that leaked raw LLM reasoning into email replies.
+A dedup guard prevents duplicate sends, and a safe fallback reply is
+sent if the model fails to produce a final answer within 3 iterations.
+
+Roll back: set `TOOL_PROTOCOL=legacy` in `.env`.
+
+### Per-sender reply style
+Praxis adapts tone, signature, language, and greeting per sender, stored
+in Neo4j. The agent can update styles from a user's correction via the
+`update_sender_style` tool. Disable with `SENDER_STYLE_ENABLED=false`.
+
+### Metrics and observability
+In-process counters, gauges, and histograms for model calls, tool calls,
+router concurrency, and email flow. Exported via `/admin/metrics` (JSON)
+and `/admin/metrics/prom` (Prometheus text).
+
+### Textual TUI
+Run `make tui` or `uv run praxis tui` to launch the terminal UI:
+- Dashboard: live system status, router concurrency, service health, metrics.
+- Settings: edit and persist app settings (masked secrets).
+- Logs: audit log viewer with filters.
+- Admin: failed-events table with retry actions.
+
+Requires `PRAXIS_ADMIN_TOKEN` env var (>= 32 chars in production).
+
+### Admin API
+All `/admin/*` endpoints require a bearer token (`PRAXIS_ADMIN_TOKEN`):
+- `GET /admin/system` — health snapshot (router, checkpointer, services)
+- `GET /admin/settings` — masked settings view
+- `POST /admin/settings` — update settings (allowlist-enforced, `***` = no change)
+- `GET /admin/logs/audit` — audit log entries (filterable: since, level, event, limit)
+- `GET /admin/logs/tail` — SSE log stream
+- `GET /admin/metrics` — JSON metrics snapshot
+- `GET /admin/metrics/prom` — Prometheus text export
+- `POST /admin/metrics/reset` — zero all counters/gauges/histograms
+- `GET /admin/failed-events` — dead-letter log
+- `POST /admin/retry-failed` — replay a failed webhook
+
 ## License
 
 MIT

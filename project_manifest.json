@@ -1,9 +1,9 @@
 {
   "project_name": "PRAXIS",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Native asynchronous enterprise email agent — LangGraph + Umans API + Hermes",
   "created_at": "2026-06-19T11:06:00Z",
-  "current_phase": "PHASE_5_DEPLOY",
+  "current_phase": "V0_2_RELEASE",
   "phase_status": "COMPLETE",
   "phase_history": [
     {
@@ -84,6 +84,38 @@
         {"id": "508", "desc": "Update README + .env.example with deployment section, quality gate table", "status": "PASS"},
         {"id": "509", "desc": "Final verification: 153/153 tests, 88% coverage, 0 lint, 0 bandit, smoke test passed", "status": "PASS"},
         {"id": "510", "desc": "Tag v0.1.0, audit log signed, CHECKPOINT::RELEASE_VERIFIED handoff", "status": "PASS"}
+      ]
+    },
+    {
+      "phase": "V0_2_EMAIL_FIX_FEATURES_TUI",
+      "objective": "Fix email reply bug (raw reasoning leaking into replies), add per-sender reply style + metrics/observability, build Textual TUI for backend management",
+      "status": "COMPLETE",
+      "gate_result": "PASS",
+      "tasks": [
+        {"id": "A1", "desc": "Config additions: agentmail_inbox_id, praxis_admin_token, tool_protocol, sender_style fields, default_tone/signature, praxis_api_url", "status": "PASS"},
+        {"id": "A2", "desc": "Update .env.example with v0.2.0 vars", "status": "PASS"},
+        {"id": "A3", "desc": "Bearer-token admin auth dependency (secrets.compare_digest, 401/403/500)", "status": "PASS"},
+        {"id": "A4", "desc": "Apply auth to existing /admin/* endpoints (failed-events, retry-failed)", "status": "PASS"},
+        {"id": "A5", "desc": "bind_tools() support in UmansChatModel + tool_calls parsing", "status": "PASS"},
+        {"id": "A6", "desc": "Dedup guard on reply/send email tools (sent_message_ids set)", "status": "PASS"},
+        {"id": "A7", "desc": "Refactor react_node for native tool-calling (legacy path preserved behind TOOL_PROTOCOL=legacy)", "status": "PASS"},
+        {"id": "A8", "desc": "Fix email.py:306 latent AttributeError (getattr for agentmail_inbox_id)", "status": "PASS"},
+        {"id": "A9", "desc": "Phase A integration smoke test (end-to-end email reply flow)", "status": "PASS"},
+        {"id": "B1", "desc": "MetricsRegistry singleton (counters, gauges, histograms, Prometheus text export)", "status": "PASS"},
+        {"id": "B2", "desc": "Instrument router and chat model with metrics (active/peak gauges, call counters, latency histograms)", "status": "PASS"},
+        {"id": "B3", "desc": "SenderStyle model + Neo4j storage (fetch_sender_style, upsert_sender_style)", "status": "PASS"},
+        {"id": "B4", "desc": "Inject sender style into system prompt when sender_style_enabled", "status": "PASS"},
+        {"id": "B5", "desc": "Admin endpoints: /admin/system, /admin/settings (GET/POST with masking), /admin/logs/audit, /admin/logs/tail (SSE), /admin/metrics, /admin/metrics/prom, /admin/metrics/reset", "status": "PASS"},
+        {"id": "C1", "desc": "Add textual+click deps + praxis CLI entry point", "status": "PASS"},
+        {"id": "C2", "desc": "PraxisClient HTTP wrapper (async, bearer auth, all /admin/* methods)", "status": "PASS"},
+        {"id": "C3", "desc": "PraxisTUI app shell with tab switching (4 tabs, number keys 1-4)", "status": "PASS"},
+        {"id": "C4", "desc": "Dashboard screen (live system status + metrics, 5s auto-refresh)", "status": "PASS"},
+        {"id": "C5", "desc": "Settings screen (editable form, masked secrets, save/reset)", "status": "PASS"},
+        {"id": "C6", "desc": "Logs screen (audit log viewer with event/level filters, 10s auto-refresh)", "status": "PASS"},
+        {"id": "C7", "desc": "Admin screen (failed-events DataTable, retry selected/all, refresh)", "status": "PASS"},
+        {"id": "C8", "desc": "Wire all four screens with tab switching (display toggle, per-screen refresh dispatch)", "status": "PASS"},
+        {"id": "C9", "desc": "make test-docker target + TUI smoke check in ci-cd/smoke-test.sh", "status": "PASS"},
+        {"id": "C10", "desc": "Final integration, README v0.2.0 docs, manifest update, tag v0.2.0", "status": "PASS"}
       ]
     }
   ],
@@ -175,6 +207,18 @@
       "phase_4_low_findings_regression_tests": 3,
       "release_tag": "v0.1.0",
       "gate_result": "PASS"
+    },
+    "v0_2": {
+      "tests_passing": "326/344 (18 pre-existing failures: live-API + qwen-limit config drift, unrelated to v0.2.0 — verified by stashing v0.2.0 changes and re-running on merge base 2751386)",
+      "tests_passing_v0_2_only": "18/18 new v0.2.0 tests pass (Phase A integration, metrics, sender_style, admin endpoints, TUI)",
+      "lint_errors": 0,
+      "security_findings": 0,
+      "email_reply_bug": "FIXED (native tool-calling via bind_tools, dedup guard, safe fallback reply)",
+      "legacy_rollback": "TOOL_PROTOCOL=legacy preserves v0.1.0 text-protocol path",
+      "admin_auth": "Bearer token (secrets.compare_digest) on all /admin/* endpoints",
+      "tui_screens": ["Dashboard", "Settings", "Logs", "Admin"],
+      "release_tag": "v0.2.0",
+      "gate_result": "PASS"
     }
   },
   "active_requirements": [
@@ -195,7 +239,8 @@
     "REQ-307: Hermes Prompt Template Library",
     "REQ-308: Phase 3 Quality Gate Evidence",
     "PHASE-4: Review & Hardening (2 LOW non-blocking findings, fix-forward to Phase 5)",
-    "PHASE-5: Deployment & Release (CI/CD + Dockerfile hardening + smoke tests + 2 LOW fixes)"
+    "PHASE-5: Deployment & Release (CI/CD + Dockerfile hardening + smoke tests + 2 LOW fixes)",
+    "V0_2: Email reply bug fix (native tool-calling) + per-sender reply style + metrics/observability + Textual TUI"
   ],
   "skill_allocation": {
     "PHASE_1": ["plan", "spike", "kanban-orchestrator", "test-driven-development"],
