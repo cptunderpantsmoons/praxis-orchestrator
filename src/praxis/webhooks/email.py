@@ -303,7 +303,7 @@ async def _download_attachments(
         )
         return inbound_email
 
-    inbox_id = settings.agentmail_inbox_id or os.environ.get("AGENTMAIL_INBOX_ID", "")
+    inbox_id = getattr(settings, "agentmail_inbox_id", None) or os.environ.get("AGENTMAIL_INBOX_ID", "")
     downloader = AttachmentDownloader(
         api_key=api_key,
         base_url="https://api.agentmail.to",
