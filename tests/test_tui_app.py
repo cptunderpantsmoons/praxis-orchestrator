@@ -122,3 +122,21 @@ async def test_logs_screen_displays_audit_entries():
         content = app.query_one("#content")
         text = str(content)
         assert "graph_invoke" in text or "graph_failed" in text
+
+
+@pytest.mark.asyncio
+async def test_admin_screen_lists_failed_events():
+    app = PraxisTUI(api_url="http://test:8000", admin_token="test-token")
+    from unittest.mock import AsyncMock
+    mock_client = AsyncMock()
+    mock_client.get_failed_events = AsyncMock(return_value={
+        "events": [{"event_id": "evt_1", "error": "graph_failed", "ts": "2026-06-22T10:00:00Z"}]
+    })
+    mock_client.get_metrics = AsyncMock(return_value={"counters": {"foo": 1}, "gauges": {}, "histograms": {}})
+    async with app.run_test() as pilot:
+        app.client = mock_client
+        await pilot.press("4")
+        await pilot.pause()
+        content = app.query_one("#content")
+        text = str(content)
+        assert "evt_1" in text or "failed" in text.lower()
