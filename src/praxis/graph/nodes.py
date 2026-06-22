@@ -863,7 +863,11 @@ async def _react_legacy(
 ) -> dict[str, Any]:
     """Legacy TOOL:/FINAL: text-protocol ReAct loop (v0.1.0 behavior).
 
-    Preserved verbatim from v0.1.0 for rollback safety. Do NOT modify.
+    Preserved verbatim from v0.1.0 for rollback safety, with the addition
+    of the dedup guard (``sent_message_ids``) wired through
+    ``_execute_tool`` and the auto-reply fallback calls so that a
+    ``TOOL_PROTOCOL=legacy`` rollback cannot produce the duplicate-send
+    production bug the spec called out.
     """
     email = state["email_content"]
     triage = state.get("triage_result")
@@ -872,6 +876,10 @@ async def _react_legacy(
     metadata = state.get("metadata") or AgentMetadata()
     if metadata.started_at is None:
         metadata.started_at = datetime.now(UTC)
+    # Dedup guard: shared set of message IDs already sent in this run.
+    # Initialised from metadata so dedup state survives across re-invokes
+    # (checkpointing) and is visible to downstream nodes on write-back.
+    sent_message_ids: set[str] = set(metadata.sent_message_ids or set())
 
     configurable = {} if config is None else (config.get("configurable") or {})
     router = configurable.get("router")
@@ -956,7 +964,9 @@ async def _react_legacy(
     final_response = ""
 
     for _iteration in range(max_iterations):
-        metadata.model_calls["kimi"] += 1
+        # REACT_MODEL = "umans-flash" is qwen (per the v2.2 model assignment).
+        # Count under the qwen bucket to match the native path.
+        metadata.model_calls["qwen"] += 1
         _ainvoke_result = model.ainvoke(messages)
         response = _ainvoke_result if not asyncio.iscoroutine(_ainvoke_result) else await _ainvoke_result
         content = response.content if isinstance(response.content, str) else str(response.content)
@@ -977,6 +987,8 @@ async def _react_legacy(
                     tool_call, hermes_service=hermes_service,
                     ldr_service=ldr_service, document_service=document_service,
                     agent_delegator=agent_delegator,
+                    sent_message_ids=sent_message_ids,
+                    state=state,
                 )
                 tool_outputs[tool_name] = tool_result
                 tool_message = HumanMessage(
@@ -1023,11 +1035,19 @@ async def _react_legacy(
             # Try reply_to_message first (preserves thread context). If the
             # message_id is empty or the reply fails, fall back to send_message
             # (sends a new email to the sender).
+            #
+            # Dedup guard: ``sent_message_ids`` is shared with ``_execute_tool``
+            # so an explicit ``TOOL:reply_email(...)`` line and the auto-reply
+            # fallback can't both send for the same message_id. ``_send_email``
+            # receives ``message_id=email.message_id`` so its dedup check
+            # (which keyed on the inbound message_id) sees the reply that
+            # already happened (or that was attempted) and short-circuits.
             if email.message_id:
                 reply_result = await _reply_email(
                     inbox_id=inbox_id,
                     message_id=email.message_id,
                     body=reply_body,
+                    sent_message_ids=sent_message_ids,
                 )
                 if "successfully" not in reply_result.lower():
                     logger.warning("react.reply_failed_trying_send", reply_result=reply_result[:200])
@@ -1042,6 +1062,8 @@ async def _react_legacy(
                     to=sender_addr,
                     subject=f"Re: {email.subject}" if email.subject else "Re: Your email",
                     body=reply_body,
+                    sent_message_ids=sent_message_ids,
+                    message_id=email.message_id,
                 )
 
             success = "successfully" in reply_result.lower()
@@ -1085,6 +1107,7 @@ async def _react_legacy(
                 success=False,
             )
 
+    metadata.sent_message_ids = sent_message_ids
     metadata.finished_at = datetime.now(UTC)
     return {
         "tool_outputs": tool_outputs,

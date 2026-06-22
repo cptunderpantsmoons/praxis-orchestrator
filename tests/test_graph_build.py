@@ -164,7 +164,10 @@ async def test_graph_runs_end_to_end_with_mocked_models(monkeypatch: Any) -> Non
     assert result["triage_result"] is not None
     assert result["triage_result"].priority == Priority.NORMAL
     assert result["final_response"].startswith("I will check that for you.")
-    assert result["metadata"].model_calls["qwen"] == 1
+    # Triage (1 qwen call) + react (1 qwen call, since REACT_MODEL is
+    # umans-flash = qwen, and the legacy path now counts under the qwen
+    # bucket to match the native path).
+    assert result["metadata"].model_calls["qwen"] == 2
 
 
 @pytest.mark.asyncio
