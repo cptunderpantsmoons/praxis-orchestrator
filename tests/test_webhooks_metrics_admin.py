@@ -72,6 +72,7 @@ def test_metrics_reset_zeros_all(admin_token):
     registry = get_metrics()
     registry.inc_counter("foo", 5)
     registry.set_gauge("bar", 3)
+    registry.observe_histogram("baz", 42)
     client = TestClient(app)
     resp = client.post(
         "/admin/metrics/reset", headers={"Authorization": f"Bearer {admin_token}"}
@@ -80,3 +81,4 @@ def test_metrics_reset_zeros_all(admin_token):
     snap = registry.snapshot()
     assert snap["counters"] == {}
     assert snap["gauges"] == {}
+    assert snap["histograms"] == {}
