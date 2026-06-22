@@ -647,15 +647,41 @@ async def _react_native(
 
     _router, model = _get_router_and_model(REACT_MODEL, router=router)
 
-    # Build the available tool registry. Email tools are bound so the model can
-    # invoke reply_email/send_email with structured arguments.
-    from praxis.tools.email_tools import reply_email_tool, send_email_tool
+    # Build the available tool registry. The spec (v2.2) requires 13 tools
+    # to be bound in native mode so the model can discover and invoke them:
+    #   - reply_email, send_email, search_inbox, list_threads (email_tools.py)
+    #   - hermes_recall, hermes_store, hermes_learn (agent_tools.py wrappers)
+    #   - deep_research, analyze_document, create_report (agent_tools.py)
+    #   - delegate_to_agent, list_agents (agent_tools.py)
+    #   - update_sender_style (conditional on sender_style_enabled)
+    #
+    # The agent_tools wrappers delegate to ``_execute_tool`` (the single
+    # dispatch path) so both native and legacy modes share execution logic.
+    # The services are bound via closure so the tool functions can reach
+    # them without the model having to pass them.
+    from praxis.tools.agent_tools import build_agent_tools
+    from praxis.tools.email_tools import (
+        list_threads_tool,
+        reply_email_tool,
+        search_inbox_tool,
+        send_email_tool,
+    )
 
     tools: list[Any] = [
         reply_email_tool,
         send_email_tool,
+        search_inbox_tool,
+        list_threads_tool,
         dummy_search,
         dummy_calculator,
+        *build_agent_tools(
+            hermes_service=hermes_service,
+            ldr_service=ldr_service,
+            document_service=document_service,
+            agent_delegator=agent_delegator,
+            sent_message_ids=sent_message_ids,
+            state=state,
+        ),
     ]
     if settings.sender_style_enabled:
         try:
