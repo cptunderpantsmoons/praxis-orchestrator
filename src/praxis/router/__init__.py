@@ -231,7 +231,7 @@ class UmansConcurrencyRouter:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=self._settings.umans_base_url,
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=httpx.Timeout(120.0, connect=10.0),  # v2.2 prompt needs more reasoning time
                 headers={
                     "Authorization": f"Bearer {self._settings.umans_api_key}",
                     "Content-Type": "application/json",
