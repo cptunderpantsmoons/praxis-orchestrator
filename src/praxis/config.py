@@ -8,6 +8,7 @@ requirement and is overridable via the UMANS_GLM_CONTEXT_WINDOW env var.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -71,6 +72,15 @@ class Settings(BaseSettings):
     hermes_api_key: str = "hermes-dev-key"
     hermes_timeout: float = 30.0
     hermes_max_retries: int = 3
+
+    # ── v0.2.0 additions ─────────────────────────────────────────
+    agentmail_inbox_id: str | None = None
+    praxis_admin_token: str = ""
+    tool_protocol: Literal["native", "legacy"] = "native"
+    sender_style_enabled: bool = True
+    default_tone: Literal["formal", "casual", "professional"] = "professional"
+    default_signature: str = "— PRAXIS"
+    praxis_api_url: str = "http://localhost:8000"
 
 
 @lru_cache
