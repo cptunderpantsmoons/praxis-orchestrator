@@ -16,6 +16,10 @@ from praxis.graph.checkpointer import get_checkpointer
 from praxis.router import UmansConcurrencyRouter
 from praxis.webhooks.admin import router as admin_router
 from praxis.webhooks.email import router as webhook_router
+from praxis.webhooks.logs import router as logs_router
+from praxis.webhooks.metrics_admin import router as metrics_router
+from praxis.webhooks.settings_admin import router as settings_router
+from praxis.webhooks.system import router as system_router
 
 logger = structlog.get_logger()
 
@@ -113,6 +117,10 @@ app = FastAPI(
 # Include route groups
 app.include_router(webhook_router, prefix="/webhook", tags=["webhooks"])
 app.include_router(admin_router, tags=["admin"])
+app.include_router(system_router)
+app.include_router(settings_router)
+app.include_router(logs_router)
+app.include_router(metrics_router)
 
 
 @app.get("/health", tags=["health"])
