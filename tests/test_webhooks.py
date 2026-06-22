@@ -214,7 +214,13 @@ class TestWebhookEndpoint:
             "praxis.webhooks.email._invoke_graph",
             staticmethod(_noop),
         )
-        retry_resp = client.post("/admin/retry-failed?event_id=evt_fail123")
+        monkeypatch.setenv("PRAXIS_ADMIN_TOKEN", "test-admin-token-1234567890abcdef1234567890")
+        get_settings.cache_clear()
+        admin_headers = {"Authorization": "Bearer test-admin-token-1234567890abcdef1234567890"}
+        retry_resp = client.post(
+            "/admin/retry-failed?event_id=evt_fail123",
+            headers=admin_headers,
+        )
         assert retry_resp.status_code == 200
         assert retry_resp.json()["status"] == "accepted_retry"
         # Resolved entry removed.

@@ -13,7 +13,9 @@ from typing import Any
 
 import orjson
 import structlog
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from praxis.webhooks.auth import require_admin_token
 
 from praxis.config import get_settings
 from praxis.webhooks.email import (
@@ -66,7 +68,7 @@ def _mark_event_resolved(path: pathlib.Path, event_id: str) -> None:
 
 
 @router.get("/failed-events")
-async def list_failed_events() -> dict[str, Any]:
+async def list_failed_events(_auth: None = Depends(require_admin_token)) -> dict[str, Any]:
     """List webhook events that failed and were persisted for retry."""
     settings = get_settings()
     events = _read_failed_events(settings)
@@ -89,6 +91,7 @@ async def list_failed_events() -> dict[str, Any]:
 @router.post("/retry-failed")
 async def retry_failed_event(
     request: Request,
+    _auth: None = Depends(require_admin_token),
     event_id: str | None = None,
     index: int | None = None,
 ) -> dict[str, Any]:
