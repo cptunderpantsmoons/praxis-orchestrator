@@ -26,6 +26,7 @@ import orjson
 import structlog
 
 from praxis.config import Settings, get_settings
+from praxis.features.metrics import get_metrics
 from praxis.models.umans import UMANS_MODELS, get_model_config
 
 logger = structlog.get_logger()
@@ -186,9 +187,26 @@ class UmansConcurrencyRouter:
         """
         if model_name not in self._semaphores:
             raise ValueError(f"Unknown model: {model_name!r}")
-        async with self._global_semaphore:
-            async with self._semaphores[model_name]:
-                yield
+        metrics = get_metrics()
+        metrics.increment_gauge(f"router_active:{model_name}")
+        metrics.increment_gauge("router_global_active")
+        # Update peak gauges (only when current exceeds the recorded peak)
+        gauges = metrics.snapshot()["gauges"]
+        current = gauges.get(f"router_active:{model_name}", 0)
+        peak = gauges.get(f"router_peak:{model_name}", 0)
+        if current > peak:
+            metrics.set_gauge(f"router_peak:{model_name}", current)
+        global_current = gauges.get("router_global_active", 0)
+        global_peak = gauges.get("router_global_peak", 0)
+        if global_current > global_peak:
+            metrics.set_gauge("router_global_peak", global_current)
+        try:
+            async with self._global_semaphore:
+                async with self._semaphores[model_name]:
+                    yield
+        finally:
+            metrics.decrement_gauge(f"router_active:{model_name}")
+            metrics.decrement_gauge("router_global_active")
 
     async def close(self) -> None:
         """Close the underlying HTTP client if we own it."""

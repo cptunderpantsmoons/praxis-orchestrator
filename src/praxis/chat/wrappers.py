@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from time import perf_counter
 from typing import Any
 
 import httpx
@@ -31,6 +32,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict
 
 from praxis.config import get_settings
+from praxis.features.metrics import get_metrics
 from praxis.models.umans import get_model_config
 from praxis.router import UmansConcurrencyRouter
 
@@ -170,49 +172,60 @@ class UmansChatModel(BaseChatModel):
             )
             raise RuntimeError(msg)
 
-        api_messages = [self._convert_message(m) for m in messages]
+        metrics = get_metrics()
+        metrics.inc_counter(f"model_calls:{self.model_name}")
+        start = perf_counter()
+        try:
+            api_messages = [self._convert_message(m) for m in messages]
 
-        payload_kwargs: dict[str, Any] = {
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-        }
-        if stop:
-            payload_kwargs["stop"] = stop
-        if self.tools is not None:
-            payload_kwargs["tools"] = self.tools
-        payload_kwargs.update(kwargs)
+            payload_kwargs: dict[str, Any] = {
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+            }
+            if stop:
+                payload_kwargs["stop"] = stop
+            if self.tools is not None:
+                payload_kwargs["tools"] = self.tools
+            payload_kwargs.update(kwargs)
 
-        # Retry with exponential backoff on transient failures.
-        max_retries = 3
-        base_delay = 1.0
-        last_exception: Exception | None = None
-        for attempt in range(max_retries):
-            try:
-                response = await self.router.invoke(
-                    model_name=self.model_name,
-                    messages=api_messages,
-                    **payload_kwargs,
-                )
-                return self._create_chat_result(response)
-            except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError) as exc:
-                last_exception = exc
-                if attempt == max_retries - 1:
+            # Retry with exponential backoff on transient failures.
+            max_retries = 3
+            base_delay = 1.0
+            last_exception: Exception | None = None
+            for attempt in range(max_retries):
+                try:
+                    response = await self.router.invoke(
+                        model_name=self.model_name,
+                        messages=api_messages,
+                        **payload_kwargs,
+                    )
+                    result = self._create_chat_result(response)
+                    elapsed_ms = int((perf_counter() - start) * 1000)
+                    metrics.observe_histogram(f"model_latency_ms:{self.model_name}", elapsed_ms)
+                    return result
+                except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.NetworkError) as exc:
+                    last_exception = exc
+                    if attempt == max_retries - 1:
+                        break
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "umans.generate_retry",
+                        model=self.model_name,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        error=str(exc),
+                        delay=delay,
+                    )
+                    await asyncio.sleep(delay)
+                except Exception as exc:
+                    last_exception = exc
                     break
-                delay = base_delay * (2 ** attempt)
-                logger.warning(
-                    "umans.generate_retry",
-                    model=self.model_name,
-                    attempt=attempt + 1,
-                    max_retries=max_retries,
-                    error=str(exc),
-                    delay=delay,
-                )
-                await asyncio.sleep(delay)
-            except Exception as exc:
-                last_exception = exc
-                break
 
-        raise last_exception or RuntimeError("Umans generation failed")
+            raise last_exception or RuntimeError("Umans generation failed")
+        except Exception:
+            elapsed_ms = int((perf_counter() - start) * 1000)
+            metrics.observe_histogram(f"model_latency_ms:{self.model_name}", elapsed_ms)
+            raise
 
     # ── Helpers ───────────────────────────────────────────────────
 
