@@ -17,7 +17,10 @@ def main(url: str | None, token: str | None) -> None:
         click.echo("Error: PRAXIS_ADMIN_TOKEN not set. Pass --token or set the env var.", err=True)
         raise SystemExit(1)
 
-    click.echo("TUI not yet implemented — complete Task C3 to add the app shell.")
+    from praxis.tui.app import PraxisTUI
+
+    app = PraxisTUI(api_url=url, admin_token=token)
+    app.run()
 
 
 if __name__ == "__main__":
