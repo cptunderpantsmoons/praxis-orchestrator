@@ -14,6 +14,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -62,6 +63,9 @@ class UmansChatModel(BaseChatModel):
     temperature: float = 0.0
     context_window: int = 131_072
 
+    # Tool-calling support
+    tools: list[dict[str, Any]] | None = None
+
     # Dependencies — use Any type to avoid Pydantic is_instance_of validation
     # rejecting MagicMock during tests; validated at call time instead.
     router: Any = None
@@ -101,6 +105,31 @@ class UmansChatModel(BaseChatModel):
             router=router,
             **overrides,
         )
+
+    # ── Tool-calling ─────────────────────────────────────────────
+
+    def bind_tools(self, tools: list[Any]) -> UmansChatModel:
+        """Return a copy of this model configured to call the given tools.
+
+        Accepts LangChain StructuredTool objects or OpenAI-format tool dicts.
+        """
+        tool_dicts: list[dict[str, Any]] = []
+        for tool in tools:
+            if isinstance(tool, dict) and "type" in tool:
+                tool_dicts.append(tool)
+            elif hasattr(tool, "name") and hasattr(tool, "args_schema"):
+                schema = tool.args_schema.model_json_schema() if tool.args_schema else {"type": "object", "properties": {}}
+                tool_dicts.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": getattr(tool, "description", "") or "",
+                        "parameters": schema,
+                    },
+                })
+            else:
+                raise TypeError(f"Unsupported tool type: {type(tool)}")
+        return self.model_copy(update={"tools": tool_dicts})
 
     # ── BaseChatModel implementation ─────────────────────────────
 
@@ -149,6 +178,8 @@ class UmansChatModel(BaseChatModel):
         }
         if stop:
             payload_kwargs["stop"] = stop
+        if self.tools is not None:
+            payload_kwargs["tools"] = self.tools
         payload_kwargs.update(kwargs)
 
         # Retry with exponential backoff on transient failures.
@@ -208,9 +239,25 @@ class UmansChatModel(BaseChatModel):
         # If content is None or non-string (e.g. tool_calls-only response), default to empty string
         if not isinstance(content, str):
             content = ""
-        finish_reason = choice.get("finish_reason")
+
+        tool_calls: list[dict[str, Any]] = []
+        for tc in (msg_data.get("tool_calls") or []):
+            func = tc.get("function", {})
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append({
+                "id": tc.get("id", ""),
+                "name": func.get("name", ""),
+                "args": args,
+            })
 
         ai_message = AIMessage(content=content)
+        ai_message.tool_calls = tool_calls
+        ai_message.additional_kwargs["tool_calls"] = tool_calls
+
+        finish_reason = choice.get("finish_reason")
         generation_info: dict[str, Any] | None = (
             {"finish_reason": finish_reason} if finish_reason else None
         )
