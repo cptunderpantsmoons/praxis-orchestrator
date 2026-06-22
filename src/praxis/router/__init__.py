@@ -34,10 +34,17 @@ logger = structlog.get_logger()
 class UmansConcurrencyRouter:
     """Concurrency-limited router for Umans inference API calls.
 
-    Each model family gets its own asyncio.Semaphore. The router exposes
-    ``invoke()`` for chat-completion requests and ``acquire()`` for callers
-    that need to manage the HTTP request themselves (e.g. streaming).
+    Each model family gets its own asyncio.Semaphore (capped at 4).
+    A GLOBAL semaphore of 4 gates ALL calls across all families — no more
+    than 4 inference calls may be in flight at any time.
+
+    The router exposes ``invoke()`` for chat-completion requests and
+    ``acquire()`` for callers that need to manage the HTTP request
+    themselves (e.g. streaming).
     """
+
+    # Hard global limit — no more than this many concurrent Umans API calls total
+    GLOBAL_CONCURRENCY_LIMIT = 4
 
     def __init__(
         self,
@@ -48,6 +55,9 @@ class UmansConcurrencyRouter:
         self._client = http_client  # injectable for testing
         self._owns_client: bool = http_client is None  # we own it if we create it
 
+        # Global semaphore: hard cap across all families
+        self._global_semaphore = asyncio.Semaphore(self.GLOBAL_CONCURRENCY_LIMIT)
+
         # One semaphore per model, keyed by model name
         self._semaphores: dict[str, asyncio.Semaphore] = {
             name: asyncio.Semaphore(config.concurrency_limit)
@@ -57,6 +67,8 @@ class UmansConcurrencyRouter:
         # Instrumentation: track active and peak concurrency
         self._active: dict[str, int] = {name: 0 for name in UMANS_MODELS}
         self._peak: dict[str, int] = {name: 0 for name in UMANS_MODELS}
+        self._global_active: int = 0
+        self._global_peak: int = 0
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -83,22 +95,29 @@ class UmansConcurrencyRouter:
         config = get_model_config(model_name)
         semaphore = self._semaphores[model_name]
 
-        async with semaphore:
-            self._active[model_name] += 1
-            self._peak[model_name] = max(self._peak[model_name], self._active[model_name])
+        # Acquire global first, then per-model — prevents family stacking
+        async with self._global_semaphore:
+            self._global_active += 1
+            self._global_peak = max(self._global_peak, self._global_active)
             try:
-                start = time.monotonic()
-                response = await self._call_api(model_name, messages, **kwargs)
-                elapsed_ms = (time.monotonic() - start) * 1000
-                logger.info(
-                    "umans.invoke",
-                    model=model_name,
-                    family=config.family,
-                    elapsed_ms=round(elapsed_ms, 2),
-                )
-                return response
+                async with semaphore:
+                    self._active[model_name] += 1
+                    self._peak[model_name] = max(self._peak[model_name], self._active[model_name])
+                    try:
+                        start = time.monotonic()
+                        response = await self._call_api(model_name, messages, **kwargs)
+                        elapsed_ms = (time.monotonic() - start) * 1000
+                        logger.info(
+                            "umans.invoke",
+                            model=model_name,
+                            family=config.family,
+                            elapsed_ms=round(elapsed_ms, 2),
+                        )
+                        return response
+                    finally:
+                        self._active[model_name] -= 1
             finally:
-                self._active[model_name] -= 1
+                self._global_active -= 1
 
     async def embed(
         self,
@@ -133,35 +152,43 @@ class UmansConcurrencyRouter:
             raise ValueError(msg)
         semaphore = self._semaphores[model_name]
 
-        async with semaphore:
-            self._active[model_name] += 1
-            self._peak[model_name] = max(self._peak[model_name], self._active[model_name])
+        async with self._global_semaphore:
+            self._global_active += 1
+            self._global_peak = max(self._global_peak, self._global_active)
             try:
-                start = time.monotonic()
-                vector = await self._call_embed(model_name, input_text, **kwargs)
-                elapsed_ms = (time.monotonic() - start) * 1000
-                logger.info(
-                    "umans.embed",
-                    model=model_name,
-                    family=config.family,
-                    elapsed_ms=round(elapsed_ms, 2),
-                    vector_dim=len(vector),
-                )
-                return vector
+                async with semaphore:
+                    self._active[model_name] += 1
+                    self._peak[model_name] = max(self._peak[model_name], self._active[model_name])
+                    try:
+                        start = time.monotonic()
+                        vector = await self._call_embed(model_name, input_text, **kwargs)
+                        elapsed_ms = (time.monotonic() - start) * 1000
+                        logger.info(
+                            "umans.embed",
+                            model=model_name,
+                            family=config.family,
+                            elapsed_ms=round(elapsed_ms, 2),
+                            vector_dim=len(vector),
+                        )
+                        return vector
+                    finally:
+                        self._active[model_name] -= 1
             finally:
-                self._active[model_name] -= 1
+                self._global_active -= 1
 
     @asynccontextmanager
     async def acquire(self, model_name: str) -> AsyncIterator[None]:
         """Acquire a concurrency slot without making an API call.
 
         Useful when the caller wants to manage the HTTP request itself
-        (e.g. streaming) while still respecting the semaphore.
+        (e.g. streaming) while still respecting both the global and per-model
+        semaphores.
         """
         if model_name not in self._semaphores:
             raise ValueError(f"Unknown model: {model_name!r}")
-        async with self._semaphores[model_name]:
-            yield
+        async with self._global_semaphore:
+            async with self._semaphores[model_name]:
+                yield
 
     async def close(self) -> None:
         """Close the underlying HTTP client if we own it."""
@@ -179,11 +206,22 @@ class UmansConcurrencyRouter:
         return self._peak.get(model_name, 0)
 
     @property
+    def global_active(self) -> int:
+        """Current number of in-flight requests across ALL models."""
+        return self._global_active
+
+    @property
+    def global_peak(self) -> int:
+        """Peak concurrent requests observed across ALL models."""
+        return self._global_peak
+
+    @property
     def limits(self) -> dict[str, int]:
         """Per-family concurrency limits (for diagnostics)."""
         families: dict[str, int] = {}
         for config in UMANS_MODELS.values():
             families[config.family] = config.concurrency_limit
+        families["global"] = self.GLOBAL_CONCURRENCY_LIMIT
         return families
 
     # ── Internals ─────────────────────────────────────────────────

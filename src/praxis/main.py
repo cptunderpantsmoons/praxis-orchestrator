@@ -117,12 +117,69 @@ app.include_router(admin_router, tags=["admin"])
 
 @app.get("/health", tags=["health"])
 async def health_check() -> dict[str, Any]:
-    """Health check endpoint.
+    """Health check endpoint — reports status of all services."""
+    services = {"api": "ready"}
 
-    Quality Gate 1: Application boots successfully and passes the health check.
-    """
+    # Checkpointer (Postgres)
+    try:
+        checkpointer = app.state.checkpointer
+        services["checkpointer"] = "ready" if checkpointer else "unavailable"
+    except Exception:
+        services["checkpointer"] = "unavailable"
+
+    # Router
+    try:
+        router = app.state.umans_router
+        services["router"] = "ready" if router else "unavailable"
+    except Exception:
+        services["router"] = "unavailable"
+
+    # Hermes service
+    try:
+        hermes = getattr(app.state, "hermes_service", None)
+        if hermes:
+            healthy = await hermes.health() if hasattr(hermes, 'health') else True
+            services["hermes_service"] = "ready" if healthy else "degraded"
+        else:
+            services["hermes_service"] = "unavailable"
+    except Exception:
+        services["hermes_service"] = "unavailable"
+
+    # LDR service
+    try:
+        ldr = getattr(app.state, "ldr_service", None)
+        if ldr:
+            healthy = await ldr.health() if hasattr(ldr, 'health') else True
+            services["ldr_service"] = "ready" if healthy else "degraded"
+        else:
+            services["ldr_service"] = "unavailable"
+    except Exception:
+        services["ldr_service"] = "unavailable"
+
+    # Document service
+    try:
+        doc = getattr(app.state, "document_service", None)
+        services["document_service"] = "ready" if doc else "unavailable"
+    except Exception:
+        services["document_service"] = "unavailable"
+
+    # Agent delegator
+    try:
+        delegator = getattr(app.state, "agent_delegator", None)
+        if delegator:
+            agents = len(delegator.registry.divisions)
+            services["agent_delegator"] = f"ready ({agents} divisions)"
+        else:
+            services["agent_delegator"] = "unavailable"
+    except Exception:
+        services["agent_delegator"] = "unavailable"
+
+    all_ready = all(
+        v.startswith("ready") if isinstance(v, str) else v
+        for v in services.values()
+    )
     return {
-        "status": "ok",
+        "status": "ok" if all_ready else "degraded",
         "version": __version__,
-        "services": {"api": "ready"},
+        "services": services,
     }

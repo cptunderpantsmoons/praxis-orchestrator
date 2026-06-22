@@ -35,7 +35,7 @@ UMANS_MODELS: dict[str, UmansModelConfig] = {
     "umans-flash": UmansModelConfig(
         name="umans-flash",
         family="qwen",
-        concurrency_limit=8,
+        concurrency_limit=4,
         context_window=131_072,
         max_tokens=8192,
         temperature=0.0,
@@ -62,7 +62,7 @@ UMANS_MODELS: dict[str, UmansModelConfig] = {
     "umans-qwen3.6-35b-a3b": UmansModelConfig(
         name="umans-qwen3.6-35b-a3b",
         family="qwen",
-        concurrency_limit=8,
+        concurrency_limit=4,
         context_window=131_072,
         max_tokens=8192,
         temperature=0.0,
