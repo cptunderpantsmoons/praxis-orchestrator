@@ -1,5 +1,5 @@
 .RECIPEPREFIX := >
-.PHONY: up down lint test shell clean install install-full tui
+.PHONY: up down lint test shell clean install install-full tui test-docker
 
 # Boot infrastructure and start FastAPI dev server with hot-reload
 up:
@@ -39,3 +39,8 @@ install-full:
 # Launch the Textual TUI for managing the PRAXIS backend
 tui:
 >uv run praxis tui
+
+# Run a subset of tests inside the Docker container (avoids host venv issues)
+test-docker:
+>@test -n "$(TESTS)" || (echo "Usage: make test-docker TESTS=tests/test_foo.py" && exit 1)
+>docker compose run --rm app uv run pytest $(TESTS)

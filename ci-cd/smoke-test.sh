@@ -135,6 +135,14 @@ echo "    Response: $RESP"
 echo "$RESP" | grep -q '"status":"logged"' || fail "Webhook did not return status=logged: $RESP" 4
 echo "$RESP" | grep -q '"message_id"' && log "    PASS — message.delivered logged with message_id echoed" || log "    PASS — message.delivered logged (no message_id in response)"
 
+# ── 6. TUI boot check ──────────────────────────────────────────────
+log "[6/6] praxis tui --help (expect 0 exit, usage printed)"
+if uv run praxis tui --help > /dev/null 2>&1; then
+  log "    PASS — praxis tui --help exited 0"
+else
+  fail "praxis tui --help failed" 5
+fi
+
 echo ""
 echo "  All smoke tests passed at $BASE_URL"
 exit 0
