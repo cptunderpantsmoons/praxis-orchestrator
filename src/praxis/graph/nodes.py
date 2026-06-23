@@ -153,6 +153,11 @@ def _clean_reply_response(text: str) -> str:
 TRIAGE_MODEL = "umans-flash"
 REACT_MODEL = "umans-coder"  # kimi k2.7 — stronger reasoning + reliable native tool-calling
 
+# Runtime model override — set by the recovery agent's switch_model action
+# to toggle between umans-coder and umans-flash. When set, this takes
+# precedence over the passed model_name.
+_MODEL_OVERRIDE: str | None = None
+
 
 def _get_router_and_model(
     model_name: str,
@@ -161,7 +166,8 @@ def _get_router_and_model(
     """Return a shared router and configured model wrapper."""
     if router is None:
         router = UmansConcurrencyRouter()
-    model = UmansChatModel.create(model_name, router=router)
+    effective = _MODEL_OVERRIDE or model_name
+    model = UmansChatModel.create(effective, router=router)
     return router, model
 
 
@@ -1196,7 +1202,7 @@ def _parse_tool_call(line: str) -> dict[str, str] | None:
     return {"name": tool_name, **args}
 
 
-async def _execute_tool(
+async def _execute_tool_inner(
     tool_call: dict[str, str],
     hermes_service: Any | None = None,
     ldr_service: Any | None = None,
@@ -1508,6 +1514,62 @@ async def _execute_tool(
         value=0.0,
         success=False,
     )
+
+
+async def _execute_tool(
+    tool_call: dict[str, str],
+    hermes_service: Any | None = None,
+    ldr_service: Any | None = None,
+    document_service: Any | None = None,
+    agent_delegator: Any | None = None,
+    sent_message_ids: set[str] | None = None,
+    state: AgentState | None = None,
+) -> tuple[str, Any]:
+    """Wrapper around ``_execute_tool_inner`` that captures failures for the recovery agent.
+
+    The recovery manager is optional — if it hasn't been initialized (e.g.,
+    in tests without a full app lifespan), capture is skipped silently.
+    Any exception inside the capture path is swallowed so the ReAct loop
+    can never be broken by recovery bugs.
+    """
+    name, result = await _execute_tool_inner(
+        tool_call,
+        hermes_service=hermes_service,
+        ldr_service=ldr_service,
+        document_service=document_service,
+        agent_delegator=agent_delegator,
+        sent_message_ids=sent_message_ids,
+        state=state,
+    )
+    if hasattr(result, "success") and not result.success:
+        try:
+            from praxis.recovery import get_recovery_manager
+
+            mgr = get_recovery_manager()
+            if mgr is not None:
+                thread_id = ""
+                if state is not None:
+                    metadata = state.get("metadata") if isinstance(state, dict) else getattr(state, "metadata", None)
+                    if metadata is not None:
+                        thread_id = getattr(metadata, "thread_id", "") or (
+                            metadata.get("thread_id", "") if isinstance(metadata, dict) else ""
+                        )
+                raw_json = ""
+                if hasattr(result, "model_dump_json"):
+                    try:
+                        raw_json = result.model_dump_json()
+                    except Exception:
+                        raw_json = ""
+                mgr.capture_failure(
+                    tool_name=name,
+                    error_message=getattr(result, "message", "") or str(result),
+                    args=dict(tool_call),
+                    thread_id=thread_id,
+                    raw_result_json=raw_json,
+                )
+        except Exception:
+            logger.debug("recovery.capture_failed", exc_info=True)
+    return name, result
 
 
 def discard_node(state: AgentState) -> dict[str, Any]:
