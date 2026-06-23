@@ -69,6 +69,9 @@ SAFE_FALLBACK_REPLY = (
 )
 
 
+_TOOL_CALL_RE = re.compile(r"^\s*TOOL:\w+\s*\(", re.IGNORECASE)
+
+
 def _strip_prefixes(text: str) -> str:
     """Strip leading ``FINAL:`` prefix and extract ``body=`` from unparsed
     ``TOOL:reply_email(...)`` calls. Returns the text the cleaner should
@@ -113,6 +116,11 @@ def _strip_reasoning_lines(text: str) -> str:
         # Also strip any stray FINAL: lines in the middle
         if stripped.upper().startswith("FINAL:"):
             continue
+        # Strip any stray TOOL:<name>(...) lines — the model emitted a legacy
+        # text-protocol tool call instead of calling the tool natively. These
+        # must never leak into the email reply.
+        if _TOOL_CALL_RE.match(stripped):
+            continue
         clean_lines.append(line)
 
     return "\n".join(clean_lines).strip()
@@ -143,7 +151,7 @@ def _clean_reply_response(text: str) -> str:
 #   ReAct         -> Kimi   (umans-coder)
 #   Memory/Learn  -> GLM    (umans-glm-5.2) - used later
 TRIAGE_MODEL = "umans-flash"
-REACT_MODEL = "umans-flash"  # qwen — better at conversational email replies than kimi
+REACT_MODEL = "umans-coder"  # kimi k2.7 — stronger reasoning + reliable native tool-calling
 
 
 def _get_router_and_model(
@@ -173,7 +181,7 @@ async def triage_node(
     """
     email = state["email_content"]
     metadata = state.get("metadata") or AgentMetadata()
-    metadata.model_calls["qwen"] += 1
+    metadata.model_calls["kimi"] += 1
 
     configurable = {} if config is None else (config.get("configurable") or {})
     router = configurable.get("router")
@@ -764,7 +772,7 @@ async def _react_native(
     final_response: str | None = None
 
     for _iteration in range(max_iterations):
-        metadata.model_calls["qwen"] += 1
+        metadata.model_calls["kimi"] += 1
         response = await bound_model.ainvoke(messages)
         messages.append(response)
 
@@ -990,9 +998,7 @@ async def _react_legacy(
     final_response = ""
 
     for _iteration in range(max_iterations):
-        # REACT_MODEL = "umans-flash" is qwen (per the v2.2 model assignment).
-        # Count under the qwen bucket to match the native path.
-        metadata.model_calls["qwen"] += 1
+        metadata.model_calls["kimi"] += 1
         _ainvoke_result = model.ainvoke(messages)
         response = _ainvoke_result if not asyncio.iscoroutine(_ainvoke_result) else await _ainvoke_result
         content = response.content if isinstance(response.content, str) else str(response.content)
