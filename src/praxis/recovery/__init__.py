@@ -7,8 +7,7 @@ a reference to the FastAPI app.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from praxis.recovery.manager import RecoveryManager
 from praxis.recovery.models import (
     FailureContext,
     RecoveryActionType,
@@ -16,9 +15,6 @@ from praxis.recovery.models import (
     RecoveryPattern,
     RecoveryStats,
 )
-
-if TYPE_CHECKING:
-    from praxis.recovery.manager import RecoveryManager
 
 _recovery_manager: RecoveryManager | None = None
 
@@ -38,6 +34,7 @@ __all__ = [
     "FailureContext",
     "RecoveryActionType",
     "RecoveryEvent",
+    "RecoveryManager",
     "RecoveryPattern",
     "RecoveryStats",
     "get_recovery_manager",
