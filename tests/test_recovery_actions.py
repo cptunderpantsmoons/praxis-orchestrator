@@ -327,6 +327,78 @@ class TestReplayEmail:
         assert result.success is False
         assert "not found" in result.message
 
+    @pytest.mark.asyncio
+    async def test_replay_success_marks_resolved(self, monkeypatch):
+        """Happy path: replay finds the event, re-processes it, marks resolved."""
+        from praxis.webhooks.email import WebhookResponse
+
+        mock_app = MagicMock()
+        d = ActionDispatcher(app=mock_app)
+
+        # Mock the dead-letter log to return one event
+        fake_event = {
+            "event_id": "evt_123",
+            "thread_id": "thread_evt_123",
+            "payload": '{"event_type": "message.received", "message": {"message_id": "msg_1", "from": {"email": "user@example.com"}, "subject": "test", "body": "hello"}, "thread": {"thread_id": "evt_123"}}',
+        }
+        monkeypatch.setattr(
+            "praxis.webhooks.admin._read_failed_events",
+            lambda settings: [fake_event],
+        )
+        monkeypatch.setattr(
+            "praxis.webhooks.email._failed_events_path",
+            lambda settings: "/tmp/fake_dead_letter.jsonl",
+        )
+
+        # Mock parse_agentmail_event to return a received event
+        from praxis.models.schemas import InboundEmail
+        mock_parsed = MagicMock()
+        mock_parsed.is_received.return_value = True
+        mock_parsed.to_inbound_email.return_value = InboundEmail(
+            message_id="msg_1",
+            sender="user@example.com",
+            recipients=[],
+            subject="test",
+            body="hello",
+            received_at=datetime.now(UTC),
+        )
+        mock_parsed.thread_id = "evt_123"
+        monkeypatch.setattr(
+            "praxis.webhooks.payloads.parse_agentmail_event",
+            lambda payload: mock_parsed,
+        )
+
+        # Mock _process_received_email to return success
+        async def mock_process(**kwargs):
+            return WebhookResponse(
+                status="accepted_retry",
+                event_id="evt_123",
+                thread_id="thread_evt_123",
+                message="Replayed successfully",
+            )
+        monkeypatch.setattr(
+            "praxis.webhooks.email._process_received_email",
+            mock_process,
+        )
+
+        # Mock _mark_event_resolved
+        mark_called: list[str] = []
+        def mock_mark(path, event_id):
+            mark_called.append(event_id)
+        monkeypatch.setattr(
+            "praxis.webhooks.admin._mark_event_resolved",
+            mock_mark,
+        )
+
+        event = _event(
+            event_id="evt_123",
+            action_type=RecoveryActionType.REPLAY_EMAIL,
+        )
+        result = await d._replay_email(event)
+        assert result.success is True, f"Expected success, got: {result.message}"
+        assert "Replayed" in result.message
+        assert mark_called == ["evt_123"], f"Expected _mark_event_resolved called with evt_123, got {mark_called}"
+
 
 class TestBackoffRetry:
     @pytest.mark.asyncio

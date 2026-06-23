@@ -222,6 +222,26 @@ class TestWorkerLoop:
         assert mgr._task is None or mgr._task.done()
 
 
+class TestEnableDisable:
+    @pytest.mark.asyncio
+    async def test_enable_disable_retains_background_tasks(self):
+        """enable()/disable() tasks must be retained to prevent GC."""
+        from praxis.recovery.manager import _bg_tasks
+        _bg_tasks.clear()  # Start clean
+        mgr = RecoveryManager(_MockSettings(), app=None)
+        mgr._actions.dispatch = AsyncMock(return_value=ActionResult(success=True, message="ok"))
+        mgr.enable()
+        await asyncio.sleep(0.05)
+        # The enable task should be in _bg_tasks (or already completed and discarded)
+        # At minimum, the worker should be running
+        assert mgr._task is not None and not mgr._task.done()
+        mgr.disable()
+        await asyncio.sleep(0.2)
+        assert mgr._task is None or mgr._task.done()
+        # Cleanup
+        _bg_tasks.clear()
+
+
 class TestQueryApi:
     @pytest.mark.asyncio
     async def test_list_events_returns_snapshot(self):

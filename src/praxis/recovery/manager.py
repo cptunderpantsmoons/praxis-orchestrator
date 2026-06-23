@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# Strong references to fire-and-forget background tasks (enable/disable).
+# Without these, CPython's asyncio may GC tasks mid-execution.
+_bg_tasks: set[asyncio.Task] = set()
+
 
 class _RateLimiter:
     """Enforces a minimum interval between action executions."""
@@ -153,12 +157,16 @@ class RecoveryManager:
     def enable(self) -> None:
         """Enable the worker and start it if not already running."""
         self._enabled = True
-        asyncio.create_task(self.start())
+        task = asyncio.create_task(self.start())
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
     def disable(self) -> None:
         """Disable the worker and stop it."""
         self._enabled = False
-        asyncio.create_task(self.stop())
+        task = asyncio.create_task(self.stop())
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
 
     @property
     def enabled(self) -> bool:
