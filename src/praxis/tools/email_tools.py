@@ -17,6 +17,7 @@ import os
 
 from langchain_core.tools import StructuredTool
 
+from praxis.services.agentmail_client import get_agentmail_client
 from praxis.services.agentmail_v2 import get_agentmail_v2
 
 # Inbox ID from the environment (set by docker-compose env_file → .env).
@@ -31,6 +32,7 @@ async def _send_email(
     inbox_id: str = DEFAULT_INBOX_ID,
     sent_message_ids: set[str] | None = None,
     message_id: str | None = None,
+    body_html: str | None = None,
 ) -> str:
     """Send a new email from the agent's mailbox. Dedup-guarded by message_id.
 
@@ -46,7 +48,11 @@ async def _send_email(
     client = get_agentmail_v2()
     try:
         result = await client.send_message(
-            inbox_id=inbox_id, to=to, subject=subject, body_text=body
+            inbox_id=inbox_id,
+            to=to,
+            subject=subject,
+            body_text=body,
+            body_html=body_html,
         )
         msg_id = getattr(result, "message_id", None) or "unknown"
         if message_id and sent_message_ids is not None:
@@ -61,6 +67,7 @@ async def _reply_email(
     message_id: str,
     body: str,
     sent_message_ids: set[str] | None = None,
+    body_html: str | None = None,
 ) -> str:
     """Reply to an existing email in its original thread. Dedup-guarded.
 
@@ -72,18 +79,28 @@ async def _reply_email(
             this run. If ``message_id`` is already present, the function
             returns ``"duplicate:already_sent"`` and does NOT send. On
             success, the ``message_id`` is added to the set.
+        body_html: Optional HTML body. When provided, the legacy
+            ``AgentMailClient`` (REST API) is used because the V2 SDK's
+            ``messages.reply()`` does not accept an ``html`` parameter.
 
     If ``sent_message_ids`` is ``None`` the dedup check is skipped entirely
     (backwards-compatible with callers that don't pass the set).
     """
     if sent_message_ids is not None and message_id in sent_message_ids:
         return "duplicate:already_sent"
-    client = get_agentmail_v2()
     try:
-        result = await client.reply_to_message(
-            inbox_id=inbox_id, message_id=message_id, body=body
-        )
-        msg_id = getattr(result, "message_id", None) or "unknown"
+        if body_html:
+            client = get_agentmail_client()
+            result = await client.reply_to_message(
+                message_id=message_id, body=body, html_body=body_html,
+            )
+            msg_id = result.get("message_id", "unknown") if isinstance(result, dict) else "unknown"
+        else:
+            client = get_agentmail_v2()
+            result = await client.reply_to_message(
+                inbox_id=inbox_id, message_id=message_id, body=body,
+            )
+            msg_id = getattr(result, "message_id", None) or "unknown"
         if sent_message_ids is not None:
             sent_message_ids.add(message_id)
         return f"Reply sent successfully. Message ID: {msg_id}"
