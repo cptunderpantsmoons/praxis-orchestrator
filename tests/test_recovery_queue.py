@@ -87,3 +87,17 @@ def test_snapshot_zero_limit(tmp_path):
     q = RecoveryQueue(max_size=10, persist_path=tmp_path / "q.jsonl")
     q.enqueue(_make_event())
     assert q.snapshot(limit=0) == []
+
+
+def test_queue_works_when_persist_dir_not_writable(tmp_path):
+    """When the logs directory can't be created (e.g. read-only container fs),
+    the queue falls back to in-memory-only mode instead of crashing."""
+    read_only = tmp_path / "readonly"
+    read_only.mkdir()
+    read_only.chmod(0o555)
+    q = RecoveryQueue(max_size=10, persist_path=read_only / "subdir" / "q.jsonl")
+    assert q._persistence_enabled is False
+    q.enqueue(_make_event())
+    assert len(q) == 1
+    event = asyncio.run(q.dequeue(timeout=0.1))
+    assert event is not None

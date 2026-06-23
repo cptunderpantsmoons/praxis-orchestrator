@@ -32,7 +32,16 @@ class RecoveryQueue:
         self._deque: deque[RecoveryEvent] = deque(maxlen=max_size)
         self._event = asyncio.Event()
         self._persist_path = pathlib.Path(persist_path)
-        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+        self._persistence_enabled = True
+        try:
+            self._persist_path.parent.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as exc:
+            self._persistence_enabled = False
+            logger.warning(
+                "recovery.persist_disabled",
+                path=str(self._persist_path),
+                error=str(exc),
+            )
 
     def enqueue(self, event: RecoveryEvent) -> None:
         """Add an event. Synchronous — safe to call from sync code.
@@ -78,6 +87,8 @@ class RecoveryQueue:
 
     def _persist(self, event: RecoveryEvent) -> None:
         """Append the event to the JSONL log. Failures are logged, not raised."""
+        if not self._persistence_enabled:
+            return
         try:
             line = orjson.dumps(event.model_dump(mode="json")).decode("utf-8")
             with self._persist_path.open("a", encoding="utf-8") as f:
