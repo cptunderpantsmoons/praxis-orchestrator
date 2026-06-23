@@ -400,6 +400,26 @@ async def _process_received_email(
             is_retry=is_retry,
         )
         _persist_failed_event(settings, raw_body, exc, event_id, thread_id)
+        # Capture for the auto-healing recovery agent (fire-and-forget)
+        try:
+            from praxis.recovery import get_recovery_manager
+
+            mgr = get_recovery_manager()
+            if mgr is not None:
+                mgr.capture_failure(
+                    tool_name="webhook_email_ingest",
+                    error_message=f"{type(exc).__name__}: {exc}",
+                    args={
+                        "event_id": event_id,
+                        "thread_id": thread_id,
+                        "is_retry": is_retry,
+                    },
+                    thread_id=thread_id,
+                    event_id=event_id,
+                    traceback_str=str(exc.__traceback__) if exc.__traceback__ else "",
+                )
+        except Exception:
+            logger.debug("recovery.capture_webhook_failed", exc_info=True)
         return WebhookResponse(
             status="deferred",
             event_id=event_id,

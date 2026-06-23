@@ -18,6 +18,7 @@ from praxis.webhooks.admin import router as admin_router
 from praxis.webhooks.email import router as webhook_router
 from praxis.webhooks.logs import router as logs_router
 from praxis.webhooks.metrics_admin import router as metrics_router
+from praxis.webhooks.recovery_admin import router as recovery_router
 from praxis.webhooks.settings_admin import router as settings_router
 from praxis.webhooks.system import router as system_router
 
@@ -109,7 +110,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         environment=settings.environment,
     )
 
+    # Auto-healing recovery agent (background worker)
+    from praxis.recovery import RecoveryManager, set_recovery_manager
+
+    recovery_mgr = RecoveryManager(settings, app=app)
+    app.state.recovery_manager = recovery_mgr
+    set_recovery_manager(recovery_mgr)
+    if settings.recovery_enabled:
+        await recovery_mgr.start()
+    logger.info("recovery.manager_initialized", enabled=settings.recovery_enabled)
+
     yield
+
+    # Stop the recovery worker first so it doesn't capture failures during shutdown
+    recovery_mgr = getattr(app.state, "recovery_manager", None)
+    if recovery_mgr is not None:
+        await recovery_mgr.stop()
 
     await app.state.hermes_service.close()
     await umans_router.close()
@@ -130,6 +146,7 @@ app.include_router(system_router)
 app.include_router(settings_router)
 app.include_router(logs_router)
 app.include_router(metrics_router)
+app.include_router(recovery_router)
 
 
 @app.get("/health", tags=["health"])
@@ -190,6 +207,17 @@ async def health_check() -> dict[str, Any]:
             services["agent_delegator"] = "unavailable"
     except Exception:
         services["agent_delegator"] = "unavailable"
+
+    # Recovery worker
+    try:
+        recovery_mgr = getattr(app.state, "recovery_manager", None)
+        if recovery_mgr:
+            health = recovery_mgr.health_status()
+            services["recovery"] = "ready" if health["worker_running"] else "disabled"
+        else:
+            services["recovery"] = "unavailable"
+    except Exception:
+        services["recovery"] = "unavailable"
 
     all_ready = all(
         v.startswith("ready") if isinstance(v, str) else v
