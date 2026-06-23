@@ -196,10 +196,10 @@ class CalculationResult(ToolOutput):
     value: float
     unit: str = ""
 
-    def __init__(self, expression: str, value: float, unit: str = "", **kwargs: Any) -> None:
+    def __init__(self, expression: str, value: float, unit: str = "", success: bool = True, **kwargs: Any) -> None:
         super().__init__(
             tool_name="dummy_calculator",
-            success=True,
+            success=success,
             expression=expression,
             value=value,
             unit=unit,
