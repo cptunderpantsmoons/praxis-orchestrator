@@ -1477,12 +1477,20 @@ async def _execute_tool(
         keyword = tool_call.get("keyword", "")
         region = tool_call.get("region", "")
         if agent_delegator is None:
+            logger.warning("list_agents.no_delegator")
             return name, AgentListingResult(success=False)
         try:
             agents = agent_delegator.list_agents(
                 division=division or None,
                 keyword=keyword or None,
                 region=region or None,
+            )
+            logger.info(
+                "list_agents.called",
+                division=division,
+                keyword=keyword,
+                region=region,
+                result_count=len(agents),
             )
             return name, AgentListingResult(
                 division=division,
