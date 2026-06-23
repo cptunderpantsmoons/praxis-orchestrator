@@ -173,7 +173,7 @@ def _parse_received(message: dict[str, Any], thread: dict[str, Any], event_type:
     return ParsedEvent(
         event_id="",  # set by caller
         event_type=event_type,
-        message_id=str(message.get("id", "") or ""),
+        message_id=str(message.get("message_id") or message.get("id") or ""),
         thread_id=str(thread.get("thread_id", "") or "") or None,
         sender=_extract_address(message.get("from_") or message.get("from") or message.get("sender")),
         recipients=_extract_recipients(message.get("to")),

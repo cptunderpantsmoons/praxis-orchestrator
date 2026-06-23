@@ -241,7 +241,7 @@ def _parse_inbound_email(payload: dict[str, Any]) -> InboundEmail:
     attachments = _parse_attachments(data.get("attachments"))
 
     return InboundEmail(
-        message_id=data.get("id") or payload.get("id", ""),
+        message_id=data.get("message_id") or data.get("id") or payload.get("message_id") or payload.get("id", ""),
         sender=sender,
         recipients=recipients,
         subject=data.get("subject", ""),
