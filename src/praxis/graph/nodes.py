@@ -833,6 +833,36 @@ async def _react_native(
             stripped = _strip_reasoning_lines(content)
             if stripped:
                 final_response = _clean_reply_response(content)
+                # The model produced a genuine text reply without calling
+                # reply_email natively. Send it ourselves — the native path
+                # only sends via tool_calls or the safe-fallback below, so
+                # without this, a real reply would be logged but never
+                # delivered. Dedup guard via ``sent_message_ids`` prevents
+                # double-sends if the model already called reply_email.
+                if "reply_email" not in tool_outputs and "send_email" not in tool_outputs:
+                    try:
+                        await _reply_email(
+                            inbox_id=inbox_id,
+                            message_id=email.message_id,
+                            body=final_response,
+                            sent_message_ids=sent_message_ids,
+                        )
+                        tool_outputs["reply_email"] = EmailToolResult(
+                            message="Reply sent (text-only final response).",
+                            success=True,
+                            body=final_response,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "react.final_reply_send_failed",
+                            error=str(exc),
+                            message_id=email.message_id,
+                        )
+                        tool_outputs["reply_email"] = EmailToolResult(
+                            message=f"Final reply send failed: {exc}",
+                            success=False,
+                            body=final_response,
+                        )
                 break
             # Pure reasoning — keep iterating.
         # Either empty content or pure reasoning text — keep iterating. The
