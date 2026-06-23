@@ -131,7 +131,7 @@ async def test_native_mode_never_returns_raw_reasoning(monkeypatch):
 
     sent_bodies: list[str] = []
 
-    async def mock_reply(inbox_id, message_id, body, sent_message_ids=None):
+    async def mock_reply(inbox_id, message_id, body, sent_message_ids=None, **kwargs):
         sent_bodies.append(body)
         return "sent successfully"
 
@@ -208,7 +208,7 @@ async def test_native_mode_dedup_guard_prevents_duplicate_send(monkeypatch):
 
     send_count = {"n": 0}
 
-    async def mock_reply(inbox_id, message_id, body, sent_message_ids=None):
+    async def mock_reply(inbox_id, message_id, body, sent_message_ids=None, **kwargs):
         # Mimic the real email_tools._reply_email dedup guard (the single
         # source of truth now that _execute_tool no longer short-circuits).
         # Count only actual sends — duplicates return early without

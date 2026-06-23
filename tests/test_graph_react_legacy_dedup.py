@@ -90,7 +90,7 @@ async def test_legacy_dedup_guard_prevents_duplicate_auto_reply_send(monkeypatch
 
     actual_sends: list[dict[str, Any]] = []
 
-    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None):
+    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None, **kwargs):
         actual_sends.append({"via": "reply", "message_id": message_id})
         # Reply partially fails — returns a non-"successfully" string, so
         # the fallback _send_email kicks in. This is the exact production
@@ -103,7 +103,7 @@ async def test_legacy_dedup_guard_prevents_duplicate_auto_reply_send(monkeypatch
         # happens via the _send_email fallback.
         return "Failed to send reply: simulated partial failure"
 
-    async def mock_send_email(to, subject, body, sent_message_ids=None, message_id=None):
+    async def mock_send_email(to, subject, body, sent_message_ids=None, message_id=None, **kwargs):
         # The dedup guard lives in the real _send_email at the send
         # boundary. Without wiring, message_id would be None here (no
         # guard), and we'd record a second send.
@@ -181,7 +181,7 @@ async def test_legacy_dedup_guard_blocks_send_after_explicit_reply(monkeypatch):
 
     actual_sends: list[dict[str, Any]] = []
 
-    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None):
+    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None, **kwargs):
         if sent_message_ids is not None and message_id in sent_message_ids:
             return "duplicate:already_sent"
         if sent_message_ids is not None:
@@ -189,7 +189,7 @@ async def test_legacy_dedup_guard_blocks_send_after_explicit_reply(monkeypatch):
         actual_sends.append({"via": "reply", "message_id": message_id})
         return "Reply sent successfully. Message ID: explicit_reply"
 
-    async def mock_send_email(to, subject, body, sent_message_ids=None, message_id=None):
+    async def mock_send_email(to, subject, body, sent_message_ids=None, message_id=None, **kwargs):
         if message_id is not None and sent_message_ids is not None and message_id in sent_message_ids:
             return "duplicate:already_sent"
         if message_id is not None and sent_message_ids is not None:
@@ -230,7 +230,7 @@ async def test_legacy_dedup_guard_writes_back_sent_message_ids(monkeypatch):
     from praxis.chat.wrappers import UmansChatModel
     model = UmansChatModel.create("umans-flash", router=router)
 
-    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None):
+    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None, **kwargs):
         if sent_message_ids is not None:
             sent_message_ids.add(message_id)
         return "Reply sent successfully. Message ID: written_back_test"
@@ -273,7 +273,7 @@ async def test_legacy_dedup_guard_prevents_duplicate_explicit_tool_call(monkeypa
 
     send_count = {"n": 0}
 
-    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None):
+    async def mock_reply_email(inbox_id, message_id, body, sent_message_ids=None, **kwargs):
         # Mirror the real _reply_email dedup guard.
         if sent_message_ids is not None and message_id in sent_message_ids:
             return "duplicate:already_sent"

@@ -107,7 +107,7 @@ def _build_router_model_and_spy():
     return router, model, captured_tools
 
 
-async def _mock_reply_email(inbox_id, message_id, body, sent_message_ids=None):
+async def _mock_reply_email(inbox_id, message_id, body, sent_message_ids=None, **kwargs):
     if sent_message_ids is not None:
         sent_message_ids.add(message_id)
     return "Reply sent successfully. Message ID: test"

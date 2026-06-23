@@ -42,6 +42,7 @@ from praxis.models.schemas import (
 from praxis.router import UmansConcurrencyRouter
 from praxis.services.neo4j_client import Neo4jContextClient
 from praxis.services.qdrant_client import QdrantSenderClient
+from praxis.features.email_templates import render_email_html
 from praxis.tools.email_tools import _reply_email, _send_email
 from praxis.tools.stub_tools import dummy_calculator, dummy_search
 
@@ -847,11 +848,18 @@ async def _react_native(
                 # double-sends if the model already called reply_email.
                 if "reply_email" not in tool_outputs and "send_email" not in tool_outputs:
                     try:
+                        body_html = render_email_html(
+                            body_text=final_response,
+                            subject=getattr(email, "subject", ""),
+                            sender_email=getattr(email, "sender", ""),
+                            sender_style=getattr(metadata, "sender_style", None),
+                        )
                         await _reply_email(
                             inbox_id=inbox_id,
                             message_id=email.message_id,
                             body=final_response,
                             sent_message_ids=sent_message_ids,
+                            body_html=body_html,
                         )
                         tool_outputs["reply_email"] = EmailToolResult(
                             message="Reply sent (text-only final response).",
@@ -882,11 +890,18 @@ async def _react_native(
             iterations=max_iterations,
         )
         try:
+            body_html = render_email_html(
+                body_text=SAFE_FALLBACK_REPLY,
+                subject=getattr(email, "subject", ""),
+                sender_email=getattr(email, "sender", ""),
+                sender_style=getattr(metadata, "sender_style", None),
+            )
             await _reply_email(
                 inbox_id=inbox_id,
                 message_id=email.message_id,
                 body=SAFE_FALLBACK_REPLY,
                 sent_message_ids=sent_message_ids,
+                body_html=body_html,
             )
             tool_outputs["reply_email"] = EmailToolResult(
                 message="Safe fallback sent.",
@@ -1098,6 +1113,15 @@ async def _react_legacy(
     if not reply_already_sent and reply_body:
         inbox_id = os.environ.get("AGENTMAIL_INBOX_ID", "ib_default_agent_inbox")
         logger.info("react.auto_reply_sending", sender=email.sender, message_id=email.message_id)
+        # Render the branded HTML body once for both fallback paths
+        # (reply_email first, send_email fallback). ``reply_body`` is the
+        # source of truth; HTML is rendered FROM it.
+        reply_body_html = render_email_html(
+            body_text=reply_body,
+            subject=getattr(email, "subject", ""),
+            sender_email=getattr(email, "sender", ""),
+            sender_style=getattr(metadata, "sender_style", None),
+        )
         try:
             reply_result = ""
             # Try reply_to_message first (preserves thread context). If the
@@ -1116,6 +1140,7 @@ async def _react_legacy(
                     message_id=email.message_id,
                     body=reply_body,
                     sent_message_ids=sent_message_ids,
+                    body_html=reply_body_html,
                 )
                 if "successfully" not in reply_result.lower():
                     logger.warning("react.reply_failed_trying_send", reply_result=reply_result[:200])
@@ -1132,6 +1157,7 @@ async def _react_legacy(
                     body=reply_body,
                     sent_message_ids=sent_message_ids,
                     message_id=email.message_id,
+                    body_html=reply_body_html,
                 )
 
             success = "successfully" in reply_result.lower()
@@ -1322,6 +1348,20 @@ async def _execute_tool_inner(
                 get_settings().agentmail_inbox_id
                 or os.environ.get("AGENTMAIL_INBOX_ID", "")
             )
+        # Render the branded HTML body from the tool's text body. Requires
+        # the inbound email context (sender, subject) from ``state``; skip
+        # HTML rendering when state is None (no sender to greet).
+        body_html = None
+        if state is not None:
+            site_c_email = state.get("email_content")
+            site_c_metadata = state.get("metadata")
+            if site_c_email is not None:
+                body_html = render_email_html(
+                    body_text=body,
+                    subject=getattr(site_c_email, "subject", ""),
+                    sender_email=getattr(site_c_email, "sender", ""),
+                    sender_style=getattr(site_c_metadata, "sender_style", None) if site_c_metadata else None,
+                )
         # Dedup is owned by ``_reply_email`` in email_tools.py (the actual
         # send boundary). ``sent_message_ids`` is passed through so the
         # email_tools layer can skip the duplicate send.
@@ -1330,6 +1370,7 @@ async def _execute_tool_inner(
             message_id=message_id,
             body=body,
             sent_message_ids=sent_message_ids,
+            body_html=body_html,
         )
         success = "successfully" in result_str.lower()
         sent_msg_id = ""
@@ -1349,6 +1390,20 @@ async def _execute_tool_inner(
         message_id = tool_call.get("message_id", "")
         if not message_id and state is not None:
             message_id = state["email_content"].message_id
+        # Render the branded HTML body from the tool's text body. Requires
+        # the inbound email context (sender, subject) from ``state``; skip
+        # HTML rendering when state is None (no sender to greet).
+        body_html = None
+        if state is not None:
+            site_c_email = state.get("email_content")
+            site_c_metadata = state.get("metadata")
+            if site_c_email is not None:
+                body_html = render_email_html(
+                    body_text=body,
+                    subject=getattr(site_c_email, "subject", ""),
+                    sender_email=getattr(site_c_email, "sender", ""),
+                    sender_style=getattr(site_c_metadata, "sender_style", None) if site_c_metadata else None,
+                )
         # Dedup is owned by ``_send_email`` in email_tools.py (the actual
         # send boundary). ``sent_message_ids`` is passed through so the
         # email_tools layer can skip the duplicate send.
@@ -1358,6 +1413,7 @@ async def _execute_tool_inner(
             body=body,
             sent_message_ids=sent_message_ids,
             message_id=message_id,
+            body_html=body_html,
         )
         success = "successfully" in result_str.lower()
         sent_msg_id = ""
