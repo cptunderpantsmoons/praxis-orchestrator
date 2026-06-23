@@ -36,7 +36,8 @@ def _derive_greeting(sender_email: str, sender_style: SenderStyle | None) -> str
 
 def _text_to_html_paragraphs(text: str) -> str:
     """Escape user content, then convert paragraph breaks to <br><br>."""
-    escaped = markupsafe.escape(text)
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    escaped = markupsafe.escape(normalized)
     return str(escaped).replace("\n\n", "<br><br>").replace("\n", "<br>")
 
 

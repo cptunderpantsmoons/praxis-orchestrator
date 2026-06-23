@@ -35,3 +35,10 @@ def test_render_includes_signature():
     style = SenderStyle(tone="professional", signature="— PRAXIS", language="en")
     html = render_email_html("Body", subject="Test", sender_style=style)
     assert "— PRAXIS" in html
+
+def test_render_normalizes_windows_line_endings():
+    html = render_email_html("Para one\r\n\r\nPara two", subject="Test")
+    assert "<br><br>" in html
+    assert "\r" not in html
+    assert "Para one" in html
+    assert "Para two" in html
