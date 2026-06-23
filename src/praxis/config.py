@@ -82,6 +82,14 @@ class Settings(BaseSettings):
     default_signature: str = "— PRAXIS"
     praxis_api_url: str = "http://localhost:8000"
 
+    # ── Auto-Healing Recovery Agent ───────────────────────────────
+    recovery_enabled: bool = True
+    recovery_poll_interval_seconds: int = 10
+    recovery_max_retries: int = 3
+    recovery_rate_limit_seconds: float = 5.0
+    recovery_events_path: str = "logs/recovery_events.jsonl"
+    recovery_queue_max_size: int = 500
+
 
 @lru_cache
 def get_settings() -> Settings:
