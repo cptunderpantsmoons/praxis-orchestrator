@@ -34,3 +34,7 @@ dist/
 Thumbs.db
 .ssh/
 deploy/*.tar.gz
+
+# Runtime logs
+logs/*.jsonl
+logs/*.log

@@ -9,6 +9,22 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
+# Maps the base metric name (the part before ':') to the Prometheus label name.
+# Metrics like `tool_failures:reply_email` use `tool` as the label, while
+# `recovery_attempts:tool_returned_empty` use `pattern`. Defaults to "model"
+# for backward compatibility with the original model_* metrics.
+_LABEL_FOR_BASE: dict[str, str] = {
+    "model_calls": "model",
+    "model_latency_ms": "model",
+    "router_active": "model",
+    "router_peak": "model",
+    "tool_failures": "tool",
+    "recovery_attempts": "pattern",
+    "recovery_successes": "pattern",
+    "recovery_failures": "pattern",
+    "recovery_escalated": "pattern",
+}
+
 
 class MetricsRegistry:
     """In-memory metrics store with Prometheus text export."""
@@ -53,16 +69,18 @@ class MetricsRegistry:
         for name, value in sorted(self._counters.items()):
             base, _, label = name.partition(":")
             if label:
+                label_name = _LABEL_FOR_BASE.get(base, "model")
                 lines.append(f"# TYPE {base} counter")
-                lines.append(f'{base}{{model="{label}"}} {value}')
+                lines.append(f'{base}{{{label_name}="{label}"}} {value}')
             else:
                 lines.append(f"# TYPE {name} counter")
                 lines.append(f"{name} {value}")
         for name, value in sorted(self._gauges.items()):
             base, _, label = name.partition(":")
             if label:
+                label_name = _LABEL_FOR_BASE.get(base, "model")
                 lines.append(f"# TYPE {base} gauge")
-                lines.append(f'{base}{{model="{label}"}} {value}')
+                lines.append(f'{base}{{{label_name}="{label}"}} {value}')
             else:
                 lines.append(f"# TYPE {name} gauge")
                 lines.append(f"{name} {value}")
@@ -71,7 +89,8 @@ class MetricsRegistry:
             lines.append(f"# TYPE {base} histogram")
             count = len(values)
             total = sum(values) if values else 0
-            label_str = f'{{model="{label}"}}' if label else ""
+            label_name = _LABEL_FOR_BASE.get(base, "model")
+            label_str = f'{{{label_name}="{label}"}}' if label else ""
             lines.append(f"{base}_count{label_str} {count}")
             lines.append(f"{base}_sum{label_str} {total}")
         return "\n".join(lines) + "\n"
