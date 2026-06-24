@@ -92,7 +92,10 @@ async def _reply_email(
         if body_html:
             client = get_agentmail_client()
             result = await client.reply_to_message(
-                message_id=message_id, body=body, html_body=body_html,
+                inbox_id=inbox_id,
+                message_id=message_id,
+                body=body,
+                html_body=body_html,
             )
             msg_id = result.get("message_id", "unknown") if isinstance(result, dict) else "unknown"
         else:

@@ -96,7 +96,7 @@ class AgentMailClient:
         logger.info("agentmail.send", inbox_id=inbox_id, to=to, subject=subject)
 
         response = await self._client.post(
-            f"/api/v1/inboxes/{inbox_id}/messages",
+            f"/v0/inboxes/{inbox_id}/messages/send",
             json=payload,
         )
         response.raise_for_status()
@@ -107,6 +107,8 @@ class AgentMailClient:
         message_id: str,
         body: str,
         *,
+        inbox_id: str = "",
+        to: str | list[str] | None = None,
         html_body: str | None = None,
         reply_all: bool = False,
     ) -> dict[str, Any]:
@@ -115,6 +117,10 @@ class AgentMailClient:
         Args:
             message_id: The message ID to reply to
             body: Plain text reply body
+            inbox_id: The agent's inbox ID (required by the v0 API path)
+            to: Optional recipient list. The v0 reply endpoint accepts ``to``
+                as a list of emails; if omitted, AgentMail replies to the
+                original sender.
             html_body: Optional HTML body
             reply_all: Whether to reply to all recipients
 
@@ -125,13 +131,20 @@ class AgentMailClient:
             "text": body,
             "reply_all": reply_all,
         }
+        if to is not None:
+            payload["to"] = [to] if isinstance(to, str) else to
         if html_body:
             payload["html"] = html_body
 
-        logger.info("agentmail.reply", message_id=message_id, reply_all=reply_all)
+        logger.info(
+            "agentmail.reply",
+            message_id=message_id,
+            inbox_id=inbox_id,
+            reply_all=reply_all,
+        )
 
         response = await self._client.post(
-            f"/api/v1/messages/{message_id}/reply",
+            f"/v0/inboxes/{inbox_id}/messages/{message_id}/reply",
             json=payload,
         )
         response.raise_for_status()
@@ -139,7 +152,7 @@ class AgentMailClient:
 
     async def list_inboxes(self) -> list[dict[str, Any]]:
         """List all inboxes owned by the agent account."""
-        response = await self._client.get("/api/v1/inboxes")
+        response = await self._client.get("/v0/inboxes")
         response.raise_for_status()
         return response.json()
 
@@ -153,13 +166,13 @@ class AgentMailClient:
             Inbox data including id and address
         """
         payload = {"username": username} if username else {}
-        response = await self._client.post("/api/v1/inboxes", json=payload)
+        response = await self._client.post("/v0/inboxes", json=payload)
         response.raise_for_status()
         return response.json()
 
     async def get_inbox(self, inbox_id: str) -> dict[str, Any]:
         """Get details for a specific inbox."""
-        response = await self._client.get(f"/api/v1/inboxes/{inbox_id}")
+        response = await self._client.get(f"/v0/inboxes/{inbox_id}")
         response.raise_for_status()
         return response.json()
 

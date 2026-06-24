@@ -24,16 +24,16 @@ from praxis.services.agentmail_client import AgentMailClient
 def mock_transport() -> httpx.MockTransport:
     """Mock httpx transport for AgentMail API calls."""
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/inboxes":
+        if request.url.path == "/v0/inboxes":
             if request.method == "POST":
                 return httpx.Response(200, json={"id": "ib_test123", "address": "agent@agentmail.to"})
             return httpx.Response(200, json=[{"id": "ib_test123", "address": "agent@agentmail.to"}])
-        elif request.url.path.startswith("/api/v1/inboxes/") and "/messages" in request.url.path:
-            if request.method == "POST":
-                return httpx.Response(200, json={"id": "msg_sent", "status": "sent"})
-            return httpx.Response(200, json=[])
-        elif request.url.path.startswith("/api/v1/messages/") and "/reply" in request.url.path:
+        elif request.url.path.startswith("/v0/inboxes/") and request.url.path.endswith("/messages/send"):
+            return httpx.Response(200, json={"id": "msg_sent", "status": "sent"})
+        elif request.url.path.startswith("/v0/inboxes/") and "/messages/" in request.url.path and request.url.path.endswith("/reply"):
             return httpx.Response(200, json={"id": "msg_reply", "status": "sent"})
+        elif request.url.path.startswith("/v0/inboxes/") and "/messages" in request.url.path:
+            return httpx.Response(200, json=[])
         return httpx.Response(200, json={"status": "ok"})
 
     return httpx.MockTransport(handler)
@@ -84,6 +84,7 @@ async def test_send_message(client: AgentMailClient) -> None:
 async def test_reply_to_message(client: AgentMailClient) -> None:
     """reply_to_message sends reply in existing thread."""
     result = await client.reply_to_message(
+        inbox_id="ib_test123",
         message_id="msg_original",
         body="Thanks for your message!",
         reply_all=False,
